@@ -14,7 +14,7 @@ from typing import Iterable
 from .collections import Collection
 from .embeddings import Embedder
 from .parsers import ParseError, parse
-from .store import ChunkHit, Store, path_key
+from .store import ChunkHit, FileRecord, Store, path_key
 
 READ_LIMIT = 200_000  # characters returned by read_file
 
@@ -104,11 +104,11 @@ def _file_ids(store: Store, chunk_ids: list[int]) -> dict[int, int]:
     return dict(rows)
 
 
-def read_file(store: Store, path: str, active: Iterable[Collection], limit: int = READ_LIMIT) -> FileText:
-    """Full text of one indexed file, only if an active collection allows it.
+def _allowed_record(store: Store, path: str, active: Iterable[Collection]) -> tuple[FileRecord, tuple[str, ...]]:
+    """The indexed file at `path` and the active collections allowing it, or NotAllowed.
 
     The path is normalised (absolute, symlinks resolved, case-folded on Windows)
-    before any check, and the file is checked again on disk before reading.
+    before any check, and the file is checked again on disk.
     """
     active = [c for c in active if c.active]
     key = path_key(path)
@@ -122,6 +122,12 @@ def read_file(store: Store, path: str, active: Iterable[Collection], limit: int 
     names = tuple(c.name for c in active if c.allows(key, record.mtime) and c.allows(key, mtime))
     if not names:
         raise NotAllowed(path)
+    return record, names
+
+
+def read_file(store: Store, path: str, active: Iterable[Collection], limit: int = READ_LIMIT) -> FileText:
+    """Full text of one indexed file, only if an active collection allows it."""
+    record, names = _allowed_record(store, path, active)
     try:
         sections = parse(record.path)
     except ParseError as exc:
@@ -131,3 +137,125 @@ def read_file(store: Store, path: str, active: Iterable[Collection], limit: int 
     if truncated:
         text = text[:limit]
     return FileText(record.path, names, text, truncated)
+
+
+# ---- similar documents -------------------------------------------------------
+#
+# Two layers, like note-similarity tools in note apps:
+#   1. Document level: each file has one vector (the mean of its chunk vectors).
+#      Files whose vector is nearest the source file's are candidates.
+#   2. Passage level: some of the source's passages are also searched on their
+#      own, so a file that shares one strong section (but is otherwise about
+#      something else) is still found. Every candidate is then scored on its
+#      best passage matches, which are returned as evidence.
+
+DOC_CANDIDATES = 40  # files taken from the document-level ranking
+PROBE_PASSAGES = 16  # source passages searched one by one for passage-level candidates
+PROBE_HITS = 10  # passages kept per probe
+TOP_BLOCKS = 3  # a candidate's passage score is the mean of its best few passage matches
+DOC_WEIGHT = 0.5  # final score = DOC_WEIGHT * document similarity + rest * passage similarity
+PASSAGE_CHARS = 500  # evidence passages are cut to this length
+
+
+class NothingToCompare(Exception):
+    def __init__(self, path: str):
+        super().__init__(f"{path} has no indexed text to compare with other documents.")
+
+
+@dataclass(frozen=True)
+class Evidence:
+    text: str  # passage in the similar file
+    location: str  # where it is in the similar file
+    source_location: str  # the passage of the source file it matches best
+    similarity: float
+
+
+@dataclass(frozen=True)
+class SimilarFile:
+    path: str
+    collections: tuple[str, ...]
+    score: float
+    document_similarity: float
+    passage_similarity: float
+    passages: tuple[Evidence, ...]
+
+
+@dataclass(frozen=True)
+class SimilarResult:
+    source: str
+    source_collections: tuple[str, ...]
+    results: tuple[SimilarFile, ...]
+
+
+def find_similar(
+    store: Store, path: str, active: Iterable[Collection], limit: int = 8, passages: int = 2
+) -> SimilarResult:
+    """Files in the active collections most like the file at `path`, which must be in one too."""
+    import numpy as np
+
+    active = [c for c in active if c.active]
+    record, names = _allowed_record(store, path, active)
+    _, src_locs, _, src = store.chunk_vectors(record.id)
+    doc = store.doc_vector(record.id)
+    if doc is None or len(src) == 0:
+        raise NothingToCompare(record.path)
+    allowed = allowed_files(store, active)
+    allowed.pop(record.id, None)
+    if not allowed or limit <= 0:
+        return SimilarResult(record.path, names, ())
+    ids = list(allowed)
+
+    # Layer 1 and 2: gather candidate files.
+    doc_sim = dict(store.similar_files(doc, ids, max(DOC_CANDIDATES, limit * 3)))
+    candidates = set(doc_sim)
+    for row in _spread(len(src), PROBE_PASSAGES):
+        hits = store.vector_search(src[row].tolist(), ids, PROBE_HITS)
+        candidates.update(_file_ids(store, [h.chunk_id for h in hits]).values())
+
+    src = _unit(src)
+    scored = []
+    for file_id in candidates:
+        _, locs, texts, mat = store.chunk_vectors(file_id)
+        if len(mat) == 0:
+            continue
+        sims = src @ _unit(mat).T  # (source passages, candidate passages)
+        best = sims.max(axis=0)  # each candidate passage's best match in the source
+        order = np.argsort(-best)
+        passage_sim = float(best[order[:TOP_BLOCKS]].mean())
+        if file_id not in doc_sim:
+            other = store.doc_vector(file_id)
+            doc_sim[file_id] = float(np.dot(doc, other)) if other is not None else 0.0
+        score = DOC_WEIGHT * doc_sim[file_id] + (1 - DOC_WEIGHT) * passage_sim
+        evidence = tuple(
+            Evidence(_clip(texts[i]), locs[i], src_locs[int(sims[:, i].argmax())], round(float(best[i]), 4))
+            for i in order[:max(0, passages)]
+        )
+        scored.append((score, file_id, passage_sim, evidence))
+
+    scored.sort(key=lambda s: s[0], reverse=True)
+    paths = {rec.id: rec.path for rec in store.files().values()}
+    results = tuple(
+        SimilarFile(paths[fid], allowed[fid], round(score, 4), round(doc_sim[fid], 4), round(psim, 4), ev)
+        for score, fid, psim, ev in scored[:limit]
+    )
+    return SimilarResult(record.path, names, results)
+
+
+def _spread(n: int, k: int) -> list[int]:
+    """Up to k row numbers spread evenly over 0..n-1."""
+    if n <= k:
+        return list(range(n))
+    return sorted({round(i * (n - 1) / (k - 1)) for i in range(k)})
+
+
+def _unit(m):
+    import numpy as np
+
+    norms = np.linalg.norm(m, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return m / norms
+
+
+def _clip(text: str) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= PASSAGE_CHARS else text[:PASSAGE_CHARS].rsplit(" ", 1)[0] + "…"

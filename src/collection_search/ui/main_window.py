@@ -5,16 +5,18 @@ from __future__ import annotations
 import os
 import time
 
-from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QObject, Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
-    QAbstractItemView, QGroupBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
-    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QTabWidget, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QFileDialog, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
+    QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .. import claude_config
 from ..addons import ToolSpec
-from ..engine import Engine, Status
+from ..engine import Engine, NotReady, Status
+from ..search import NotAllowed, NothingToCompare
 from ..settings import SCOPE, TOOLS, Settings
 from .collection_dialog import CollectionDialog
 from .icon import app_icon
@@ -47,6 +49,7 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._collections_tab(), "Collections")
+        self.tabs.addTab(self._similar_tab(), "Similar")
         self.tabs.addTab(self._tools_tab(), "Tools")
         self.tabs.addTab(self._status_tab(), "Status")
         self.setCentralWidget(self.tabs)
@@ -126,6 +129,87 @@ class MainWindow(QMainWindow):
         )
         if answer == QMessageBox.Yes:
             self.settings.delete_collection(cid)
+
+    # ---- Similar ----------------------------------------------------------------------
+    def _similar_tab(self) -> QWidget:
+        self.similar_path = QLineEdit()
+        self.similar_path.setPlaceholderText("Path of a document in a ticked collection")
+        self.similar_path.returnPressed.connect(self.find_similar)
+        browse, find = QPushButton("Browse…"), QPushButton("Find similar")
+        browse.clicked.connect(self._browse_similar)
+        find.clicked.connect(self.find_similar)
+        row = QHBoxLayout()
+        row.addWidget(self.similar_path, 1)
+        row.addWidget(browse)
+        row.addWidget(find)
+        self.similar_message = QLabel("Documents most like the one you pick, with the passages that match. "
+                                      "Double-click a result to open it.")
+        self.similar_message.setWordWrap(True)
+        self.similar_results = QTreeWidget()
+        self.similar_results.setHeaderLabels(["Document", "Score", "Collections"])
+        self.similar_results.setWordWrap(True)
+        self.similar_results.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.similar_results.header().setStretchLastSection(False)
+        self.similar_results.itemDoubleClicked.connect(self._open_similar)
+        again = QPushButton("Find similar to selected")
+        again.clicked.connect(self._similar_to_selected)
+        bottom = QHBoxLayout()
+        bottom.addWidget(again)
+        bottom.addStretch()
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.addLayout(row)
+        layout.addWidget(self.similar_message)
+        layout.addWidget(self.similar_results)
+        layout.addLayout(bottom)
+        return tab
+
+    def _browse_similar(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Pick a document", os.path.dirname(self.similar_path.text()))
+        if path:
+            self.similar_path.setText(os.path.normpath(path))
+            self.find_similar()
+
+    def find_similar(self) -> None:
+        path = self.similar_path.text().strip().strip('"')
+        self.similar_results.clear()
+        if not path:
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            result = self.engine.find_similar(path, self.settings.preferences.max_result_count, passages=3)
+        except (NotReady, NotAllowed, NothingToCompare) as exc:
+            self.similar_message.setText(str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        if not result.results:
+            self.similar_message.setText("No other documents in the ticked collections to compare with.")
+            return
+        self.similar_message.setText(f"{len(result.results)} documents most like {os.path.basename(result.source)}. "
+                                     "Double-click a result to open it.")
+        for r in result.results:
+            item = QTreeWidgetItem([f"{os.path.basename(r.path)}\n{r.path}", f"{r.score:.2f}",
+                                    ", ".join(r.collections)])
+            item.setData(0, ID_ROLE, r.path)
+            item.setToolTip(0, f"Whole document {r.document_similarity:.2f}, best passages {r.passage_similarity:.2f}")
+            for p in r.passages:
+                child = QTreeWidgetItem([f"{p.location}  ↔  {p.source_location} of the source\n{p.text}",
+                                         f"{p.similarity:.2f}", ""])
+                child.setData(0, ID_ROLE, r.path)
+                item.addChild(child)
+            self.similar_results.addTopLevelItem(item)
+
+    def _open_similar(self, item: QTreeWidgetItem, _column: int = 0) -> None:
+        path = item.data(0, ID_ROLE)
+        if path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _similar_to_selected(self) -> None:
+        items = self.similar_results.selectedItems()
+        if items and items[0].data(0, ID_ROLE):
+            self.similar_path.setText(items[0].data(0, ID_ROLE))
+            self.find_similar()
 
     # ---- Tools ------------------------------------------------------------------------
     def _tools_tab(self) -> QWidget:
