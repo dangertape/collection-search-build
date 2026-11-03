@@ -94,7 +94,11 @@ class HttpServer:
         self._sock = _bind(port)
         self.port = self._sock.getsockname()[1]
         app = server.streamable_http_app(json_response=True, stateless_http=True, host="127.0.0.1")
-        config = uvicorn.Config(_TokenCheck(app, self.token), log_level="warning", lifespan="on")
+        config = uvicorn.Config(_TokenCheck(app, self.token), log_level="warning", lifespan="on",
+            # uvicorn's own console logging crashes in the windowed .exe (no
+            # stdout); its loggers go through the app's log file instead.
+            log_config=None,
+        )
         self._uvicorn = uvicorn.Server(config)
         self._thread: threading.Thread | None = None
 

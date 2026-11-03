@@ -55,9 +55,11 @@ def index_path() -> str:
 
 def models_dir() -> str:
     """A 'models' folder shipped next to the program wins, so a bundled model is used offline."""
-    bundled = os.path.join(program_dir(), "models")
-    if os.path.isdir(bundled):
-        return bundled
+    # PyInstaller 6 puts bundled data in _internal (sys._MEIPASS), not beside the .exe.
+    for base in (getattr(sys, "_MEIPASS", None), program_dir()):
+        bundled = os.path.join(base, "models") if base else ""
+        if bundled and os.path.isdir(bundled):
+            return bundled
     return _ensure(os.path.join(local_dir(), "models"))
 
 
