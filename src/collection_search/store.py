@@ -39,14 +39,15 @@ class ChunkHit:
 
 
 def default_db_path() -> str:
-    base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), ".local", "share")
-    return os.path.join(base, "CollectionSearch", "index.db")
+    from .paths import index_path
+
+    return index_path()
 
 
 class Store:
     """One connection per thread: open a Store in each thread that needs it."""
 
-    def __init__(self, path: str, model_name: str, dim: int):
+    def __init__(self, path: str, model_name: str, dim: int, reset_if_model_changed: bool = False):
         if path != ":memory:":
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         self.db = sqlite3.connect(path, check_same_thread=False)
@@ -56,7 +57,13 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self._create_schema()
-        self._check_model(model_name, dim)
+        try:
+            self._check_model(model_name, dim)
+        except ModelMismatch:
+            if not reset_if_model_changed:
+                self.db.close()
+                raise
+            self.reset(model_name, dim)
         self.dim = dim
 
     def close(self) -> None:
@@ -115,10 +122,26 @@ class Store:
                 f"current model is {model_name} ({dim} dims). Rebuild the index."
             )
 
+    def reset(self, model_name: str, dim: int) -> None:
+        """Empty the index (keeps the file, which may be open in other threads)."""
+        with self.db:
+            self.db.execute("DELETE FROM files")
+            self.db.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
+            self.db.execute("DELETE FROM meta")
+            self.db.executemany(
+                "INSERT INTO meta(key, value) VALUES (?, ?)",
+                [("schema", str(SCHEMA_VERSION)), ("model", model_name), ("dim", str(dim))],
+            )
+        self.dim = dim
+
     # ---- files ----------------------------------------------------------
     def files(self) -> dict[str, FileRecord]:
         rows = self.db.execute("SELECT id, path, path_key, size, mtime FROM files").fetchall()
         return {key: FileRecord(id, path, size, mtime) for id, path, key, size, mtime in rows}
+
+    def file(self, key: str) -> FileRecord | None:
+        row = self.db.execute("SELECT id, path, size, mtime FROM files WHERE path_key = ?", (key,)).fetchone()
+        return FileRecord(*row) if row else None
 
     def replace_file(
         self,

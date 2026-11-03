@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
@@ -27,11 +28,16 @@ class Collection:
     include_patterns: list[str] = field(default_factory=list)  # empty = include all
     exclude_patterns: list[str] = field(default_factory=list)
     active: bool = True
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     def __post_init__(self) -> None:
         self._folder_keys = [path_key(f) for f in self.folders]
         self._excluded_keys = [path_key(f) for f in self.excluded]
         self._exts = {e.lower() if e.startswith(".") else "." + e.lower() for e in self.extensions}
+
+    def index_rules(self) -> tuple:
+        """What decides which files get indexed. A change here needs a sync."""
+        return (tuple(self._folder_keys), tuple(sorted(self._excluded_keys)), tuple(sorted(self._exts)))
 
     # Index time ---------------------------------------------------------
     def covers(self, key: str) -> bool:
