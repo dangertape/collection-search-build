@@ -22,6 +22,7 @@ class SyncResult:
     removed: int = 0
     unchanged: int = 0
     errors: list[tuple[str, str]] = field(default_factory=list)
+    cancelled: bool = False
 
 
 def files_for(collections: Iterable[Collection]) -> dict[str, tuple[str, int, float]]:
@@ -56,8 +57,12 @@ def sync(
     progress: ProgressFn | None = None,
     chunk_size: int = DEFAULT_SIZE,
     chunk_overlap: int = DEFAULT_OVERLAP,
+    cancelled: Callable[[], bool] | None = None,
 ) -> SyncResult:
-    """Index new and changed files, drop removed ones. Compares by path, size and mtime."""
+    """Index new and changed files, drop removed ones. Compares by path, size and mtime.
+
+    `cancelled` is checked between files so Quit or a settings change can stop a long run.
+    """
     wanted = files_for(collections)
     indexed = store.files()
     result = SyncResult()
@@ -77,6 +82,9 @@ def sync(
     todo.sort(key=lambda t: t[3], reverse=True)
 
     for done, (key, path, size, mtime, existed) in enumerate(todo):
+        if cancelled and cancelled():
+            result.cancelled = True
+            break
         if progress:
             progress(done, len(todo), path)
         try:
@@ -92,6 +100,6 @@ def sync(
             result.updated += 1
         else:
             result.added += 1
-    if progress:
+    if progress and not result.cancelled:
         progress(len(todo), len(todo), "")
     return result

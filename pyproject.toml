@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "collection-search"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local semantic search over document collections, for Claude via MCP"
 requires-python = ">=3.11"
 dependencies = [
@@ -12,13 +12,22 @@ dependencies = [
     "sqlite-vec>=0.1.6",
     "pypdf>=4.0",
     "python-docx>=1.1",
+    "mcp>=2.3,<3",
+    "uvicorn>=0.30",
+    "watchdog>=4.0",
+    "PySide6>=6.7",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+build = ["pyinstaller>=6.10"]
 
 [project.scripts]
 collection-search-cli = "collection_search.cli:main"
+collection-search-mcp = "collection_search.shim:main"
+
+[project.gui-scripts]
+collection-search = "collection_search.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

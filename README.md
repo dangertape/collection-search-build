@@ -1,59 +1,112 @@
 # Collection Search
 
-A Windows app that lets Claude search your documents by meaning. It only searches the collections you have switched on in the app. Full design: *Collection Search for Claude — Design* in the project files.
+A Windows app that lets Claude search your documents by meaning. Claude only sees the collections you have switched on in the app. Filtering happens in the app's code, so Claude never receives results from collections that are off.
 
-## Status: phase 1, the search core
+Full design: *Collection Search for Claude — Design* in the project files.
 
-This phase covers parsing, chunking, embedding, storage and hybrid search, driven from a command-line script. There is no MCP server, window or tray yet.
+## What it does
 
-| Module | What it does |
+- **Collections.** A collection is a set of folders plus filters: excluded subfolders, file types, a modified-date range and filename patterns. Each one has an on/off checkbox in the window and in the tray menu.
+- **Search.** The app indexes PDF, Word, text and Markdown files on your PC. It ranks passages by meaning (a local embedding model, no cloud) and by exact words, then combines the two rankings.
+- **Tools for Claude.** `search`, `read_file` and `list_collections`. None of them takes a collection argument, so Claude can't widen the scope. Each tool has its own on/off switch. A tool that is off returns a short error on Claude's next call, in the same chat.
+- **Add-on tools.** Drop a `.py` file into a `tools` folder and restart. See [Writing an add-on tool](#writing-an-add-on-tool).
+- **Background indexing.** The app watches the folders for changes, rescans every 10 minutes to catch anything missed, and lists files it couldn't read on the Status tab.
+
+## Install and connect (Windows)
+
+1. Build the program folder, or use one someone built for you (see [Building](#building)).
+2. Run `CollectionSearch.exe`. The window opens and a tray icon appears. The first start downloads the search model (about 130 MB) unless the build bundled it.
+3. On the **Collections** tab, click **Add…**, pick your folders and filters, and save. Indexing starts in the background, and the **Status** tab shows progress.
+4. On the **Status** tab, click **Add to Claude Desktop**, then quit and reopen Claude Desktop. This adds the entry below to `%APPDATA%\Claude\claude_desktop_config.json` and backs up the old file first:
+
+   ```json
+   { "mcpServers": { "collection-search": { "command": "C:\\...\\CollectionSearch\\collection-search-mcp.exe" } } }
+   ```
+
+5. Ask Claude about your documents.
+
+Closing the window hides it to the tray. Use **Quit** in the tray menu to stop the app. To start it at sign-in, choose that option in the installer, or put a shortcut to `CollectionSearch.exe --tray` in your Startup folder.
+
+## How Claude reaches the app
+
+Claude Desktop starts MCP servers itself over stdin/stdout, but this app is already running with its window and tray. So Claude Desktop launches the small `collection-search-mcp.exe` instead. That program forwards each message to the app on `127.0.0.1`. The app listens only on that local address and checks a random token from `%APPDATA%\CollectionSearch\connection.json`. If the app isn't running, Claude gets the message "Collection Search is not running" instead of a hang.
+
+## Where things are stored
+
+| What | Where |
 | --- | --- |
-| `parsers/` | PDF (one section per page), .docx (paragraphs and tables), .txt and .md. Add a type by adding one parser module. |
-| `chunking.py` | Splits text into about 800-character chunks with 150 characters of overlap, on paragraph boundaries. Each chunk records its page or paragraph range. |
-| `embeddings.py` | Local embeddings with fastembed (default `BAAI/bge-small-en-v1.5`). |
-| `store.py` | One SQLite file in `%LOCALAPPDATA%\CollectionSearch` holding files, chunks, vectors (sqlite-vec) and an FTS5 keyword index. |
-| `collections.py` | Collections: folders, excluded subfolders, file types, date range, filename patterns. |
-| `indexer.py` | Indexes new and changed files and drops removed ones, comparing path, size and modified time. |
-| `search.py` | Semantic and keyword search merged with reciprocal rank fusion. Results are limited to the files that active collections allow. |
+| Settings (collections, tool switches) | `%APPDATA%\CollectionSearch\settings.json` |
+| Connection file (port and token) | `%APPDATA%\CollectionSearch\connection.json`, removed when the app quits |
+| Index | `%LOCALAPPDATA%\CollectionSearch\index.db` |
+| Search model | `%LOCALAPPDATA%\CollectionSearch\models`, or a `models` folder next to the .exe |
+| Log | `%LOCALAPPDATA%\CollectionSearch\app.log` |
 
-**How scope is enforced:** search first builds the set of allowed files from the active collections. Both the vector query and the keyword query are restricted to that set in SQL, so chunks from other files are never ranked. The tests in `tests/test_search.py` check this.
+Your document folders are never written to.
 
-## Try it on Windows
+## Building
+
+On Windows with Python 3.12:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1               # dist\CollectionSearch\
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -BundleModel  # include the model for offline use
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Installer    # also make an installer (needs Inno Setup 6)
+```
+
+The build is a PyInstaller folder build with two programs, and the PC running it doesn't need Python installed:
+
+- `CollectionSearch.exe` is the app. It has no console window.
+- `collection-search-mcp.exe` is the shim Claude Desktop launches. It's a separate console program because a windowed program may start without usable stdin/stdout.
+
+## Running from source
 
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\activate
 pip install -e .[dev]
-
-# Index a folder. The model (about 130 MB) downloads on first run.
-python scripts\search_cli.py index "D:\Some\Documents"
-
-# Search it
-python scripts\search_cli.py search "notice period in the lease"
-python scripts\search_cli.py search "INV-4471" --no-keywords   # compare against semantic only
-
-# Show counts and files that could not be read (scans, password-protected PDFs)
-python scripts\search_cli.py status
-```
-
-## Measuring search quality (the phase 1 gate)
-
-Copy `questions.example.csv` to `questions.csv`. Write 20 to 30 questions about your own documents. For each one, add part of the filename that should answer it. Then run:
-
-```powershell
-python scripts\search_cli.py eval questions.csv
-python scripts\search_cli.py eval questions.csv --no-keywords
-```
-
-The gate is the right file in the top 5 for at least 80% of questions.
-
-To compare chunk sizes, index into a separate file with `--db`, for example:
-`python scripts\search_cli.py --db C:\tmp\cs-1200\index.db index "D:\Docs" --chunk-size 1200 --overlap 200`
-
-## Tests
-
-```powershell
+python -m collection_search             # the app
+python -m collection_search --mcp       # the shim, as Claude Desktop runs it
+python -m collection_search cli --help  # command-line index/search/eval
 pytest
 ```
 
-The tests use a small offline word-hash embedder (`--offline-test-embedder` on the CLI), so they need no model download. It is only for tests and not a real search model.
+The tests use a small offline word-hash embedder and run the UI without a screen. One test drives the real MCP client through the shim into the app's server.
+
+## Writing an add-on tool
+
+Put a file like this in `tools\` next to `CollectionSearch.exe`, or in `%APPDATA%\CollectionSearch\tools\`. Then restart the app. Claude sees the new tool in a new chat.
+
+```python
+from typing import Annotated
+from pydantic import Field
+
+NAME = "find_invoices"
+DESCRIPTION = "Find invoices that mention a customer."
+
+
+def handler(ctx, customer: Annotated[str, Field(description="Customer name")]) -> dict:
+    hits = ctx.search(f"invoice {customer}", limit=10)
+    return {"invoices": [h["path"] for h in hits]}
+```
+
+The parameters after `ctx` become the tool's inputs. `ctx` has only three methods, `search(query, limit)`, `read_file(path)` and `active_collections()`, and all three are already limited to the active collections. Return material, not instructions. Claude treats instructions inside tool results with caution.
+
+## Code layout
+
+| Module | Responsibility |
+| --- | --- |
+| `parsers/` | PDF, .docx, .txt and .md to text sections with page or paragraph locations |
+| `chunking.py` | Overlapping chunks on paragraph boundaries |
+| `embeddings.py` | fastembed (ONNX, CPU) behind a small interface |
+| `store.py` | SQLite holding files, chunks, vectors (sqlite-vec) and FTS5 keywords |
+| `collections.py` | Collection rules: index-time (folders, types) and search-time (dates, patterns) |
+| `indexer.py` | Diff by path, size and mtime; parse, chunk, embed, store |
+| `search.py` | Scoped hybrid search and `read_file`; always receives the active collections |
+| `settings.py` | JSON settings, one lock, change notifications |
+| `engine.py` | Model, per-thread index connections, indexer thread, periodic rescan |
+| `watcher.py` | Folder watching with debounce |
+| `addons.py`, `tools/` | Tool format, loader and built-in tools |
+| `mcp_server.py` | MCP server on localhost, token check, tool gating |
+| `shim.py` | Stdio-to-localhost forwarder for Claude Desktop |
+| `claude_config.py` | Adds the shim to Claude Desktop's config |
+| `ui/` | PySide6 window, collection editor and tray |

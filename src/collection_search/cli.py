@@ -1,9 +1,9 @@
 """Phase 1 test harness: index a folder, search it, and score test questions.
 
 Examples:
-    python -m collection_search.cli index "D:\\Clients"
-    python -m collection_search.cli search "notice period in the lease"
-    python -m collection_search.cli eval questions.csv
+    python -m collection_search cli index "D:\\Clients"
+    python -m collection_search cli search "notice period in the lease"
+    python -m collection_search cli eval questions.csv
 """
 
 from __future__ import annotations
@@ -49,7 +49,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status", help="show index counts and parse errors")
 
     args = p.parse_args(argv)
-    embedder = HashEmbedder() if args.offline_test_embedder else FastEmbedder(args.model)
+    from .paths import models_dir
+
+    embedder = HashEmbedder() if args.offline_test_embedder else FastEmbedder(args.model, cache_dir=models_dir())
     store = Store(args.db, embedder.name, embedder.dim)
     try:
         return COMMANDS[args.cmd](args, store, embedder)
