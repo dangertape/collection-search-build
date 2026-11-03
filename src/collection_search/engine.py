@@ -124,6 +124,11 @@ class Engine:
         store, _ = self._for_query()
         return search_core.read_file(store, path, self.settings.active_collections())
 
+    def find_similar(self, path: str, limit: int, passages: int = 2) -> search_core.SimilarResult:
+        store, _ = self._for_query()
+        limit = max(1, min(limit, self.settings.preferences.max_result_count))
+        return search_core.find_similar(store, path, self.settings.active_collections(), limit, passages)
+
     def active_collection_names(self) -> list[str]:
         return [c.name for c in self.settings.active_collections()]
 

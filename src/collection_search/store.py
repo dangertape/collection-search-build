@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
+import numpy as np
 import sqlite_vec
 
 from .chunking import Chunk
@@ -65,6 +66,7 @@ class Store:
                 raise
             self.reset(model_name, dim)
         self.dim = dim
+        self._backfill_doc_vectors()
 
     def close(self) -> None:
         self.db.close()
@@ -95,6 +97,12 @@ class Store:
                 chunk_id INTEGER PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
                 embedding BLOB NOT NULL
             );
+            -- One vector per file: the normalised mean of its chunk vectors.
+            -- Used to find documents like a given one (find_similar).
+            CREATE TABLE IF NOT EXISTS doc_vectors (
+                file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+                embedding BLOB NOT NULL
+            );
             CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
                 text, content='chunks', content_rowid='id', tokenize='unicode61 remove_diacritics 2'
             );
@@ -121,6 +129,22 @@ class Store:
                 f"Index was built with {row.get('model')} ({row.get('dim')} dims); "
                 f"current model is {model_name} ({dim} dims). Rebuild the index."
             )
+
+    def _backfill_doc_vectors(self) -> None:
+        """Indexes built before document vectors existed get them from their chunk vectors."""
+        missing = [r[0] for r in self.db.execute(
+            "SELECT DISTINCT c.file_id FROM chunks c LEFT JOIN doc_vectors d ON d.file_id = c.file_id "
+            "WHERE d.file_id IS NULL"
+        )]
+        if not missing:
+            return
+        with self.db:
+            for file_id in missing:
+                _, _, _, matrix = self.chunk_vectors(file_id)
+                vec = document_vector(matrix)
+                if vec is not None:
+                    self.db.execute("INSERT OR REPLACE INTO doc_vectors(file_id, embedding) VALUES (?, ?)",
+                                    (file_id, vec.tobytes()))
 
     def reset(self, model_name: str, dim: int) -> None:
         """Empty the index (keeps the file, which may be open in other threads)."""
@@ -156,6 +180,7 @@ class Store:
         if len(chunks) != len(vectors):
             raise ValueError("chunks and vectors differ in length")
         key = path_key(path)
+        doc_vec = document_vector(np.asarray(vectors, dtype=np.float32)) if len(vectors) else None
         with self.db:
             self.db.execute("DELETE FROM files WHERE path_key = ?", (key,))
             cur = self.db.execute(
@@ -172,6 +197,9 @@ class Store:
                     "INSERT INTO vectors(chunk_id, embedding) VALUES (?, ?)",
                     (cid, sqlite_vec.serialize_float32(list(vec))),
                 )
+            if doc_vec is not None:
+                self.db.execute("INSERT INTO doc_vectors(file_id, embedding) VALUES (?, ?)",
+                                (file_id, doc_vec.tobytes()))
 
     def remove_files(self, keys: Iterable[str]) -> None:
         with self.db:
@@ -231,6 +259,52 @@ class Store:
             (match, limit),
         ).fetchall()
         return [ChunkHit(cid, path, loc, text, -rank) for cid, path, loc, text, rank in rows]
+
+    # ---- similar documents ------------------------------------------------
+    def doc_vector(self, file_id: int) -> np.ndarray | None:
+        row = self.db.execute("SELECT embedding FROM doc_vectors WHERE file_id = ?", (file_id,)).fetchone()
+        return np.frombuffer(row[0], dtype=np.float32) if row else None
+
+    def similar_files(self, vec: Sequence[float], file_ids: Iterable[int], limit: int) -> list[tuple[int, float]]:
+        """(file id, cosine similarity) of the allowed files whose document vector is nearest."""
+        self._with_allowed(file_ids)
+        rows = self.db.execute(
+            """
+            SELECT d.file_id, vec_distance_cosine(d.embedding, ?) AS distance
+            FROM doc_vectors d
+            JOIN temp.allowed a ON a.id = d.file_id
+            ORDER BY distance
+            LIMIT ?
+            """,
+            (sqlite_vec.serialize_float32([float(x) for x in vec]), limit),
+        ).fetchall()
+        return [(fid, 1.0 - dist) for fid, dist in rows if dist is not None]
+
+    def chunk_vectors(self, file_id: int) -> tuple[list[int], list[str], list[str], np.ndarray]:
+        """Chunk ids, locations, texts and an (n, dim) matrix of one file's chunks, in order."""
+        rows = self.db.execute(
+            "SELECT c.id, c.location, c.text, v.embedding FROM chunks c JOIN vectors v ON v.chunk_id = c.id "
+            "WHERE c.file_id = ? ORDER BY c.ord",
+            (file_id,),
+        ).fetchall()
+        dim = getattr(self, "dim", 0)
+        if not rows:
+            return [], [], [], np.zeros((0, dim), dtype=np.float32)
+        matrix = np.stack([np.frombuffer(r[3], dtype=np.float32) for r in rows])
+        return [r[0] for r in rows], [r[1] for r in rows], [r[2] for r in rows], matrix
+
+
+def document_vector(chunk_vectors: np.ndarray) -> np.ndarray | None:
+    """Mean of the unit-length chunk vectors, scaled to unit length. None if there is nothing to average."""
+    if chunk_vectors.size == 0:
+        return None
+    norms = np.linalg.norm(chunk_vectors, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    mean = (chunk_vectors / norms).mean(axis=0)
+    length = float(np.linalg.norm(mean))
+    if length == 0:
+        return None
+    return (mean / length).astype(np.float32)
 
 
 class ModelMismatch(Exception):

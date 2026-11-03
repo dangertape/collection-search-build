@@ -76,7 +76,7 @@ def test_tool_list_has_no_collection_parameter(app):
     async def go():
         return await server.list_tools()
     tools = {t.name: t for t in anyio.run(go)}
-    assert set(tools) == {"search", "read_file", "list_collections"}
+    assert set(tools) == {"search", "read_file", "list_collections", "find_similar"}
     for t in tools.values():
         schema = t.input_schema if hasattr(t, "input_schema") else t.inputSchema
         assert not any("collection" in p for p in schema.get("properties", {}))
@@ -159,7 +159,7 @@ def test_shim_end_to_end(app, tmp_path):
                     return names, found, blocked
 
         names, found, blocked = anyio.run(go)
-        assert names == ["list_collections", "read_file", "search"]
+        assert names == ["find_similar", "list_collections", "read_file", "search"]
         assert "lease.txt" in found.content[0].text
         assert is_error(blocked) and "turned off" in blocked.content[0].text
     finally:
@@ -191,3 +191,21 @@ def test_wrong_token_rejected(app, tmp_path):
         assert err.value.code == 401
     finally:
         http.stop()
+
+
+def test_find_similar_scope(app):
+    server, settings, engine, docs, off = app
+    write(str(docs / "on" / "lease2.txt"), "Lease notice period of 60 days. Invoice 4471-C.")
+    write(str(docs / "off" / "lease_copy.txt"), "The notice period is 90 days. Invoice 4471-B.")
+    engine.request_sync()
+    end = time.time() + 10
+    while time.time() < end and engine.status().files < 4:
+        time.sleep(0.05)
+    data = json.loads(text_of(call(server, "find_similar", {"path": str(docs / "on" / "lease.txt")})))
+    assert [os.path.basename(r["path"]) for r in data["results"]] == ["lease2.txt"]
+    assert data["results"][0]["passages"] and data["count"] == 1
+    result = call(server, "find_similar", {"path": str(docs / "off" / "secret.txt")})
+    assert is_error(result) and "not in an active collection" in text_of(result)
+    settings.set_tool_enabled("find_similar", False)
+    result = call(server, "find_similar", {"path": str(docs / "on" / "lease.txt")})
+    assert is_error(result) and disabled_message("find_similar") in text_of(result)

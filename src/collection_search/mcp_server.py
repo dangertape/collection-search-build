@@ -25,7 +25,7 @@ from . import __version__
 from .addons import ToolContext, ToolSpec, bind
 from .engine import NotReady
 from .parsers import ParseError
-from .search import NotAllowed
+from .search import NotAllowed, NothingToCompare
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ def _friendly_errors(fn):
     def wrapper(**kwargs):
         try:
             return fn(**kwargs)
-        except (NotReady, NotAllowed, ParseError) as exc:
+        except (NotReady, NotAllowed, NothingToCompare, ParseError) as exc:
             raise ToolError(str(exc)) from exc
 
     return wrapper
