@@ -165,3 +165,20 @@ def test_index_refuses_a_different_model(tmp_path, embedder):
     Store(path, embedder.name, embedder.dim).close()
     with pytest.raises(ModelMismatch):
         Store(path, "other-model", 384)
+
+
+def test_folder_walk_keys_match_normalised_paths(tmp_path):
+    from collection_search.indexer import files_for
+    from collection_search.store import path_key
+
+    root = tmp_path / "docs"
+    write(str(root / "A" / "one.md"), "x")
+    write(str(root / "A" / "Skip" / "two.md"), "x")
+    write(str(root / "three.txt"), "x")
+    write(str(root / "image.png"), "x")
+    col = Collection("C", [str(root)], excluded=[str(root / "A" / "Skip")])
+    found = files_for([col])
+    assert set(found) == {path_key(str(root / "A" / "one.md")), path_key(str(root / "three.txt"))}
+    counts = []
+    files_for([col], scanning=counts.append)
+    assert files_for([col], cancelled=lambda: True) == {}

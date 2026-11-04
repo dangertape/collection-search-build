@@ -115,3 +115,62 @@ def test_watcher_picks_up_new_file(tmp_path):
         assert wait_for(lambda: engine.status().files == 2, 15)
     finally:
         engine.stop()
+
+
+class SlowEmbedder(HashEmbedder):
+    def embed_documents(self, texts):
+        time.sleep(0.05)
+        return super().embed_documents(texts)
+
+
+def test_file_changes_dont_restart_a_running_scan(tmp_path):
+    """Constant change events (Obsidian, sync apps) must not keep a scan from finishing."""
+    import threading
+
+    docs = tmp_path / "docs"
+    for i in range(20):
+        write(str(docs / f"n{i}.md"), f"Note number {i}.")
+    settings = Settings.load(str(tmp_path / "s.json"))
+    settings.preferences.watch_folders = False
+    settings.upsert_collection(Collection("A", [str(docs)]))
+    engine = Engine(settings, str(tmp_path / "i.db"), lambda m: SlowEmbedder())
+    stop = threading.Event()
+
+    def ping():
+        while not stop.is_set():
+            engine.request_sync()
+            time.sleep(0.02)
+
+    engine.start()
+    pinger = threading.Thread(target=ping, daemon=True)
+    pinger.start()
+    try:
+        assert wait_for(lambda: engine.status().state == "idle" and engine.status().files == 20, 15)
+    finally:
+        stop.set()
+        engine.stop()
+
+
+def test_watcher_ignores_files_it_does_not_index(tmp_path):
+    from types import SimpleNamespace
+
+    from collection_search.watcher import FolderWatcher
+
+    docs = str(tmp_path / "vault")
+    settings = Settings.load(str(tmp_path / "s.json"))
+    settings.upsert_collection(Collection("A", [docs], extensions=[".md"]))
+    engine = Engine(settings, str(tmp_path / "i.db"), lambda m: HashEmbedder())
+    watcher = FolderWatcher(lambda: None, engine._wanted)
+
+    def event(kind, path, is_dir=False, dest=""):
+        return SimpleNamespace(event_type=kind, src_path=path, dest_path=dest, is_directory=is_dir)
+
+    join = os.path.join
+    assert watcher.relevant(event("modified", join(docs, "note.md")))
+    assert watcher.relevant(event("moved", join(docs, "x.tmp"), dest=join(docs, "note.md")))  # safe-save
+    assert not watcher.relevant(event("modified", join(docs, ".obsidian", "workspace.json")))
+    assert not watcher.relevant(event("modified", join(docs, "photo.png")))
+    assert not watcher.relevant(event("modified", join(str(tmp_path), "elsewhere.md")))
+    assert not watcher.relevant(event("created", join(docs, ".obsidian", "plugins"), is_dir=True))
+    assert not watcher.relevant(event("modified", join(docs, "sub"), is_dir=True))
+    assert watcher.relevant(event("deleted", join(docs, "sub"), is_dir=True))

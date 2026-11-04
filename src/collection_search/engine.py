@@ -84,6 +84,9 @@ class Engine:
         self._damaged = threading.Event()  # set by any thread that finds the index corrupt
         self._wake = threading.Event()
         self._sync_requested = threading.Event()
+        # Set when folders or rules change: the scan in progress is out of date and
+        # stops early. A plain file change doesn't stop it; it only queues another scan.
+        self._restart_requested = threading.Event()
         self._stopping = threading.Event()
         self._thread: threading.Thread | None = None
         self._watcher = None
@@ -119,6 +122,7 @@ class Engine:
     def reindex_all(self) -> None:
         """Rebuild the index from scratch (the Status tab's Reindex button)."""
         self._rebuild_requested = True
+        self._restart_requested.set()
         self.request_sync()
 
     # ---- status ---------------------------------------------------------------
@@ -223,6 +227,7 @@ class Engine:
     # ---- settings changes -----------------------------------------------------
     def _on_settings(self, kind: str) -> None:
         if kind == INDEX:
+            self._restart_requested.set()
             self.request_sync()
 
     # ---- indexer thread -------------------------------------------------------
@@ -239,8 +244,8 @@ class Engine:
         while not self._stopping.is_set():
             if self._sync_requested.is_set():
                 self._sync_requested.clear()
+                self._update_watcher()  # watch first, so a change during the scan isn't missed
                 self._sync_once()
-                self._update_watcher()
             rescan = max(1, self.settings.preferences.rescan_minutes) * 60
             self._wake.wait(rescan)
             if not self._wake.is_set():
@@ -330,17 +335,21 @@ class Engine:
         if self._rebuild_requested:
             self._rebuild_requested = False
             store.reset(self._embedder.name, self._embedder.dim)
+        self._restart_requested.clear()
         self._set_status(state="indexing", message="Checking folders", done=0, total=0, current="")
+
+        def scanning(found):
+            self._set_status(state="indexing", message=f"Checking folders ({found:,} files so far)")
 
         def progress(done, total, path):
             self._set_status(state="indexing", message=f"Indexing {done} of {total}",
                              done=done, total=total, current=path)
 
         def cancelled():
-            return self._stopping.is_set() or self._sync_requested.is_set()
+            return self._stopping.is_set() or self._restart_requested.is_set()
 
         result = sync(store, _Locked(self._embedder, self._embed_lock), self.settings.collections(),
-                      progress, prefs.chunk_size, prefs.chunk_overlap, cancelled)
+                      progress, prefs.chunk_size, prefs.chunk_overlap, cancelled, scanning)
         stats = store.stats()
         if result.cancelled:
             return  # another sync is queued, or we are quitting
@@ -357,8 +366,23 @@ class Engine:
         if self._watcher is None:
             from .watcher import FolderWatcher
 
-            self._watcher = FolderWatcher(self.request_sync)
+            self._watcher = FolderWatcher(self.request_sync, self._wanted)
         self._watcher.watch(folders)
+
+
+    def _wanted(self, path: str) -> bool:
+        """Does a changed file matter: an indexed type inside a collection's folders?"""
+        from .store import path_key
+
+        ext = os.path.splitext(path)[1].lower()
+        collections = self.settings.collections()
+        if not any(ext in c._exts for c in collections):
+            return False
+        try:
+            key = path_key(path)
+        except (OSError, ValueError):
+            return True
+        return any(c.covers(key) for c in collections)
 
 
 class _Locked:
