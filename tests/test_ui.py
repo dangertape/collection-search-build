@@ -94,3 +94,20 @@ def test_dialog_validation_and_result(qapp, tmp_path):
     for box in d.type_boxes.values():
         box.setChecked(False)
     assert "file type" in d._problem()
+
+
+def test_similar_tab(window, tmp_path):
+    w, tray, settings, engine, app = window
+    write(str(tmp_path / "docs" / "b.txt"), "hello world")
+    engine.request_sync()
+    end = time.time() + 10
+    while engine.status().files < 2 and time.time() < end:
+        pump(app, 0.1)
+    w.similar_path.setText(str(tmp_path / "docs" / "a.txt"))
+    w.find_similar()
+    assert w.similar_results.topLevelItemCount() == 1
+    assert "b.txt" in w.similar_results.topLevelItem(0).text(0)
+    w.similar_path.setText(str(tmp_path / "elsewhere.txt"))
+    w.find_similar()
+    assert w.similar_results.topLevelItemCount() == 0
+    assert "not in an active collection" in w.similar_message.text()

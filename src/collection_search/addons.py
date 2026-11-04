@@ -55,6 +55,17 @@ class ToolContext:
         f = self._engine.read_file(path)
         return {"path": f.path, "collections": list(f.collections), "text": f.text, "truncated": f.truncated}
 
+    def find_similar(self, path: str, limit: int | None = None, passages: int = 2) -> dict:
+        if limit is None:
+            limit = self._engine.settings.preferences.default_result_count
+        r = self._engine.find_similar(path, limit, passages)
+        return {
+            "source": r.source,
+            "source_collections": list(r.source_collections),
+            "results": [asdict(f) | {"collections": list(f.collections),
+                                     "passages": [asdict(p) for p in f.passages]} for f in r.results],
+        }
+
     def active_collections(self) -> list[str]:
         return self._engine.active_collection_names()
 

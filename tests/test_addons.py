@@ -23,7 +23,7 @@ class FakeEngine:
 
 
 def test_builtin_tools_load():
-    assert {t.name for t in load_tools()} == {"search", "read_file", "list_collections"}
+    assert {t.name for t in load_tools()} == {"search", "read_file", "list_collections", "find_similar"}
 
 
 def test_addon_file_becomes_a_tool(tmp_path):
@@ -43,7 +43,7 @@ def test_addon_file_becomes_a_tool(tmp_path):
     (tmp_path / "search.py").write_text("NAME='search'\nDESCRIPTION='dup'\ndef handler(ctx): return 1")
     tools = load_tools([str(tmp_path), str(tmp_path / "missing")])
     by_name = {t.name: t for t in tools}
-    assert set(by_name) == {"search", "read_file", "list_collections", "count_scope"}
+    assert set(by_name) == {"search", "read_file", "list_collections", "find_similar", "count_scope"}
     assert by_name["search"].source == "built-in"  # built-ins win name clashes
 
     server = build_server(FakeEngine(), tools)

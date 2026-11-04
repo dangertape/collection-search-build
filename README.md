@@ -8,7 +8,8 @@ Full design: *Collection Search for Claude — Design* in the project files.
 
 - **Collections.** A collection is a set of folders plus filters: excluded subfolders, file types, a modified-date range and filename patterns. Each one has an on/off checkbox in the window and in the tray menu.
 - **Search.** The app indexes PDF, Word, text and Markdown files on your PC. It ranks passages by meaning (a local embedding model, no cloud) and by exact words, then combines the two rankings.
-- **Tools for Claude.** `search`, `read_file` and `list_collections`. None of them takes a collection argument, so Claude can't widen the scope. Each tool has its own on/off switch. A tool that is off returns a short error on Claude's next call, in the same chat.
+- **Similar documents.** Pick a document and the app lists the documents most like it, with the passages that match. It works in two layers. Each file has one whole-document vector (the average of its passage vectors), which finds files about the same thing overall. Some of the file's passages are also searched on their own, which finds files that share one strong section but are otherwise about something else. Each result's score mixes the two, and its best matching passages are shown next to the part of your file they match. Use the **Similar** tab, or ask Claude to find documents like one it found.
+- **Tools for Claude.** `search`, `read_file`, `find_similar` and `list_collections`. None of them takes a collection argument, so Claude can't widen the scope. Each tool has its own on/off switch. A tool that is off returns a short error on Claude's next call, in the same chat.
 - **Add-on tools.** Drop a `.py` file into a `tools` folder and restart. See [Writing an add-on tool](#writing-an-add-on-tool).
 - **Background indexing.** The app watches the folders for changes, rescans every 10 minutes to catch anything missed, and lists files it couldn't read on the Status tab.
 
@@ -98,10 +99,10 @@ The parameters after `ctx` become the tool's inputs. `ctx` has only three method
 | `parsers/` | PDF, .docx, .txt and .md to text sections with page or paragraph locations |
 | `chunking.py` | Overlapping chunks on paragraph boundaries |
 | `embeddings.py` | fastembed (ONNX, CPU) behind a small interface |
-| `store.py` | SQLite holding files, chunks, vectors (sqlite-vec) and FTS5 keywords |
+| `store.py` | SQLite holding files, chunks, passage and document vectors (sqlite-vec) and FTS5 keywords |
 | `collections.py` | Collection rules: index-time (folders, types) and search-time (dates, patterns) |
 | `indexer.py` | Diff by path, size and mtime; parse, chunk, embed, store |
-| `search.py` | Scoped hybrid search and `read_file`; always receives the active collections |
+| `search.py` | Scoped hybrid search, `find_similar` and `read_file`; always receives the active collections |
 | `settings.py` | JSON settings, one lock, change notifications |
 | `engine.py` | Model, per-thread index connections, indexer thread, periodic rescan |
 | `watcher.py` | Folder watching with debounce |
