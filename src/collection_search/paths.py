@@ -1,7 +1,13 @@
 """Where the app keeps its files.
 
-Settings and the connection file live in %APPDATA%; the index and the
-embedding model live in %LOCALAPPDATA% (machine-specific, can be large).
+On Windows everything lives in %USERPROFILE%\.collection-search, not in
+AppData. Claude Desktop installs as a packaged (MSIX) app, and programs it
+starts (the connector, or the app itself) see a private copy of AppData.
+The app and its connector must see the same files: the connector reads the
+app's connection file, and an index split between the two copies corrupts.
+
+Elsewhere, settings and the connection file live in ~/.config; the index and
+the embedding model in ~/.local/share.
 Set COLLECTION_SEARCH_HOME to keep everything in one folder instead, which
 tests and development use.
 """
@@ -23,17 +29,27 @@ def _ensure(path: str) -> str:
     return path
 
 
+WINDOWS_DIR_NAME = ".collection-search"
+
+
+def _windows_dir() -> str | None:
+    if os.name != "nt":
+        return None
+    return os.path.join(os.environ.get("USERPROFILE") or os.path.expanduser("~"), WINDOWS_DIR_NAME)
+
+
 def roaming_dir() -> str:
-    base = _home_override() or os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), ".config")
-    return _ensure(base if _home_override() else os.path.join(base, APP_DIR_NAME))
+    override = _home_override() or _windows_dir()
+    if override:
+        return _ensure(override)
+    return _ensure(os.path.join(os.path.expanduser("~"), ".config", APP_DIR_NAME))
 
 
 def local_dir() -> str:
-    override = _home_override()
+    override = _home_override() or _windows_dir()
     if override:
         return _ensure(override)
-    base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), ".local", "share")
-    return _ensure(os.path.join(base, APP_DIR_NAME))
+    return _ensure(os.path.join(os.path.expanduser("~"), ".local", "share", APP_DIR_NAME))
 
 
 def settings_path() -> str:

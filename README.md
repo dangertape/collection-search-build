@@ -30,17 +30,19 @@ Closing the window hides it to the tray. Use **Quit** in the tray menu to stop t
 
 ## How Claude reaches the app
 
-Claude Desktop starts MCP servers itself over stdin/stdout, but this app is already running with its window and tray. So Claude Desktop launches the small `collection-search-mcp.exe` instead. That program forwards each message to the app on `127.0.0.1`. The app listens only on that local address and checks a random token from `%APPDATA%\CollectionSearch\connection.json`. If the app isn't running, Claude gets the message "Collection Search is not running" instead of a hang.
+Claude Desktop starts MCP servers itself over stdin/stdout, but this app is already running with its window and tray. So Claude Desktop launches the small `collection-search-mcp.exe` instead. That program forwards each message to the app on `127.0.0.1`. The app listens only on that local address and checks a random token from `%USERPROFILE%\.collection-search\connection.json`. If the app isn't running, Claude gets the message "Collection Search is not running" instead of a hang.
 
 ## Where things are stored
 
 | What | Where |
 | --- | --- |
-| Settings (collections, tool switches) | `%APPDATA%\CollectionSearch\settings.json` |
-| Connection file (port and token) | `%APPDATA%\CollectionSearch\connection.json`, removed when the app quits |
-| Index | `%LOCALAPPDATA%\CollectionSearch\index.db` |
-| Search model | `%LOCALAPPDATA%\CollectionSearch\models`, or a `models` folder next to the .exe |
-| Log | `%LOCALAPPDATA%\CollectionSearch\app.log` |
+| Settings (collections, tool switches) | `%USERPROFILE%\.collection-search\settings.json` |
+| Connection file (port and token) | `%USERPROFILE%\.collection-search\connection.json`, removed when the app quits |
+| Index | `%USERPROFILE%\.collection-search\index.db` |
+| Search model | `%USERPROFILE%\.collection-search\models`, or a `models` folder next to the .exe |
+| Log | `%USERPROFILE%\.collection-search\app.log` |
+
+These are kept outside AppData because Claude Desktop is a packaged app: programs it starts see a private copy of AppData, so the app and its connector would otherwise disagree about where its files are.
 
 Your document folders are never written to.
 
@@ -75,7 +77,7 @@ The tests use a small offline word-hash embedder and run the UI without a screen
 
 ## Writing an add-on tool
 
-Put a file like this in `tools\` next to `CollectionSearch.exe`, or in `%APPDATA%\CollectionSearch\tools\`. Then restart the app. Claude sees the new tool in a new chat.
+Put a file like this in `tools\` next to `CollectionSearch.exe`, or in `%USERPROFILE%\.collection-search\tools\`. Then restart the app. Claude sees the new tool in a new chat.
 
 ```python
 from typing import Annotated
