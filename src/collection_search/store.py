@@ -52,6 +52,13 @@ class Store:
         if path != ":memory:":
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         self.db = sqlite3.connect(path, check_same_thread=False)
+        try:
+            self._open(model_name, dim, reset_if_model_changed)
+        except BaseException:
+            self.db.close()  # don't leave the file held open (it may need moving aside)
+            raise
+
+    def _open(self, model_name: str, dim: int, reset_if_model_changed: bool) -> None:
         self.db.enable_load_extension(True)
         sqlite_vec.load(self.db)
         self.db.enable_load_extension(False)
@@ -62,7 +69,6 @@ class Store:
             self._check_model(model_name, dim)
         except ModelMismatch:
             if not reset_if_model_changed:
-                self.db.close()
                 raise
             self.reset(model_name, dim)
         self.dim = dim
