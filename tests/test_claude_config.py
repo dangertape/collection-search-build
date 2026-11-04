@@ -11,7 +11,7 @@ def test_install_keeps_other_servers(tmp_path):
     claude_config.install(str(path))
     data = json.loads(path.read_text())
     assert data["theme"] == "dark" and data["mcpServers"]["other"] == {"command": "x"}
-    assert data["mcpServers"]["collection-search"] == claude_config.shim_command()
+    assert data["mcpServers"]["my-documents"] == claude_config.shim_command()
     assert claude_config.is_installed(str(path))
     assert (tmp_path / "Claude" / "claude_desktop_config.json.bak").exists()
 

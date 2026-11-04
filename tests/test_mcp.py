@@ -76,7 +76,8 @@ def test_tool_list_has_no_collection_parameter(app):
     async def go():
         return await server.list_tools()
     tools = {t.name: t for t in anyio.run(go)}
-    assert set(tools) == {"search", "read_file", "list_collections", "find_similar"}
+    assert set(tools) == {"search_documents", "read_document", "list_document_collections",
+                          "find_similar_documents", "get_document_links", "explore_documents"}
     for t in tools.values():
         schema = t.input_schema if hasattr(t, "input_schema") else t.inputSchema
         assert not any("collection" in p for p in schema.get("properties", {}))
@@ -84,36 +85,36 @@ def test_tool_list_has_no_collection_parameter(app):
 
 def test_search_returns_only_active(app):
     server, settings, engine, docs, off = app
-    data = json.loads(text_of(call(server, "search", {"query": "zebracorn notes", "limit": 10})))
+    data = json.loads(text_of(call(server, "search_documents", {"query": "zebracorn notes", "limit": 10})))
     assert all("secret" not in r["path"] for r in data["results"])
     settings.set_collection_active(off.id, True)
-    data = json.loads(text_of(call(server, "search", {"query": "zebracorn notes", "limit": 10})))
+    data = json.loads(text_of(call(server, "search_documents", {"query": "zebracorn notes", "limit": 10})))
     assert any("secret" in r["path"] for r in data["results"])
 
 
 def test_list_collections(app):
     server, *_ = app
-    assert json.loads(text_of(call(server, "list_collections", {}))) == {"active_collections": ["On"]}
+    assert json.loads(text_of(call(server, "list_document_collections", {}))) == {"active_collections": ["On"]}
 
 
 def test_disabled_tool_errors_on_next_call(app):
     server, settings, *_ = app
-    settings.set_tool_enabled("search", False)
-    result = call(server, "search", {"query": "notice"})
-    assert is_error(result) and disabled_message("search") in text_of(result)
-    settings.set_tool_enabled("search", True)
-    assert not is_error(call(server, "search", {"query": "notice"}))
+    settings.set_tool_enabled("search_documents", False)
+    result = call(server, "search_documents", {"query": "notice"})
+    assert is_error(result) and disabled_message("search_documents") in text_of(result)
+    settings.set_tool_enabled("search_documents", True)
+    assert not is_error(call(server, "search_documents", {"query": "notice"}))
 
 
 def test_read_file_scope(app):
     server, settings, engine, docs, off = app
-    ok = call(server, "read_file", {"path": str(docs / "on" / "lease.txt")})
+    ok = call(server, "read_document", {"path": str(docs / "on" / "lease.txt")})
     assert "notice period" in json.loads(text_of(ok))["text"]
     for path in [str(docs / "off" / "secret.txt"),
                  str(docs / "on" / ".." / "off" / "secret.txt"),
                  "/etc/passwd",
                  str(docs / "on" / "missing.txt")]:
-        result = call(server, "read_file", {"path": path})
+        result = call(server, "read_document", {"path": path})
         assert is_error(result) and "not in an active collection" in text_of(result)
 
 
@@ -124,13 +125,13 @@ def test_read_file_through_symlink_outside_scope(app, tmp_path):
         os.symlink(docs / "off" / "secret.txt", link)
     except (OSError, NotImplementedError):
         pytest.skip("symlinks not available")
-    result = call(server, "read_file", {"path": str(link)})
+    result = call(server, "read_document", {"path": str(link)})
     assert is_error(result)
 
 
 def test_limit_is_validated(app):
     server, *_ = app
-    assert is_error(call(server, "search", {"query": "x", "limit": 1000}))
+    assert is_error(call(server, "search_documents", {"query": "x", "limit": 1000}))
 
 
 def test_shim_end_to_end(app, tmp_path):
@@ -153,13 +154,14 @@ def test_shim_end_to_end(app, tmp_path):
                 async with ClientSession(read, write_) as session:
                     await session.initialize()
                     names = sorted(t.name for t in (await session.list_tools()).tools)
-                    found = await session.call_tool("search", {"query": "4471-B", "limit": 3})
-                    settings.set_tool_enabled("search", False)
-                    blocked = await session.call_tool("search", {"query": "4471-B"})
+                    found = await session.call_tool("search_documents", {"query": "4471-B", "limit": 3})
+                    settings.set_tool_enabled("search_documents", False)
+                    blocked = await session.call_tool("search_documents", {"query": "4471-B"})
                     return names, found, blocked
 
         names, found, blocked = anyio.run(go)
-        assert names == ["find_similar", "list_collections", "read_file", "search"]
+        assert names == ["explore_documents", "find_similar_documents", "get_document_links",
+                         "list_document_collections", "read_document", "search_documents"]
         assert "lease.txt" in found.content[0].text
         assert is_error(blocked) and "turned off" in blocked.content[0].text
     finally:
@@ -201,11 +203,44 @@ def test_find_similar_scope(app):
     end = time.time() + 10
     while time.time() < end and engine.status().files < 4:
         time.sleep(0.05)
-    data = json.loads(text_of(call(server, "find_similar", {"path": str(docs / "on" / "lease.txt")})))
+    data = json.loads(text_of(call(server, "find_similar_documents", {"path": str(docs / "on" / "lease.txt")})))
     assert [os.path.basename(r["path"]) for r in data["results"]] == ["lease2.txt"]
     assert data["results"][0]["passages"] and data["count"] == 1
-    result = call(server, "find_similar", {"path": str(docs / "off" / "secret.txt")})
+    result = call(server, "find_similar_documents", {"path": str(docs / "off" / "secret.txt")})
     assert is_error(result) and "not in an active collection" in text_of(result)
-    settings.set_tool_enabled("find_similar", False)
-    result = call(server, "find_similar", {"path": str(docs / "on" / "lease.txt")})
-    assert is_error(result) and disabled_message("find_similar") in text_of(result)
+    settings.set_tool_enabled("find_similar_documents", False)
+    result = call(server, "find_similar_documents", {"path": str(docs / "on" / "lease.txt")})
+    assert is_error(result) and disabled_message("find_similar_documents") in text_of(result)
+
+
+def test_tools_are_marked_read_only(app):
+    server, *_ = app
+
+    async def go():
+        return await server.list_tools()
+    for tool in anyio.run(go):
+        hints = tool.annotations
+        assert hints.read_only_hint is True and hints.destructive_hint is False
+        assert hints.open_world_hint is False and hints.title
+        assert tool.title
+
+
+def test_new_tools_over_mcp(app):
+    server, settings, engine, docs, off = app
+    write(str(docs / "on" / "notes.md"), "# Lease\n\n## Notice\n\nSee [[lease]] for the 90 days.\n\nMore text.")
+    engine.request_sync()
+    end = time.time() + 10
+    while time.time() < end and engine.status().files < 3:
+        time.sleep(0.05)
+    data = json.loads(text_of(call(server, "search_documents", {"query": "notice", "limit": 1})))
+    assert data["count"] == 1 and data["next_offset"] == 1
+    links = json.loads(text_of(call(server, "get_document_links", {"path": str(docs / "on" / "notes.md")})))
+    assert [os.path.basename(l["path"]) for l in links["links_to"]] == ["lease.txt"]
+    part = json.loads(text_of(call(server, "read_document",
+                                   {"path": str(docs / "on" / "notes.md"), "around": "Lease > Notice", "context": 0})))
+    assert "[[lease]]" in part["text"] and part["shown"]
+    mapped = json.loads(text_of(call(server, "explore_documents", {"path": str(docs / "on" / "notes.md")})))
+    assert {os.path.basename(d["path"]) for d in mapped["documents"]} >= {"notes.md", "lease.txt"}
+    assert is_error(call(server, "explore_documents", {}))
+    result = call(server, "read_document", {"path": str(docs / "on" / "notes.md"), "around": "nowhere"})
+    assert is_error(result) and "Could not find" in text_of(result)

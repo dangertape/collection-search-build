@@ -19,12 +19,14 @@ DEFAULT_OVERLAP = 150
 class Chunk:
     text: str
     location: str
+    heading: str = ""  # headings above the chunk's text, e.g. "Exodus 20 > 1-4"
 
 
 @dataclass
 class _Piece:
     text: str
     location: str
+    heading: str = ""
 
 
 def chunk_sections(
@@ -58,10 +60,10 @@ def _pieces(sections: list[Section], size: int):
             if not para:
                 continue
             if len(para) <= size:
-                yield _Piece(para, section.location)
+                yield _Piece(para, section.location, section.heading)
             else:
                 for part in _split_long(para, size):
-                    yield _Piece(part, section.location)
+                    yield _Piece(part, section.location, section.heading)
 
 
 def _split_long(text: str, size: int) -> list[str]:
@@ -94,12 +96,12 @@ def _overlap_tail(pieces: list[_Piece], overlap: int) -> list[_Piece]:
         return []
     last = pieces[-1]
     if len(last.text) <= overlap:
-        return [_Piece(last.text, last.location)]
+        return [_Piece(last.text, last.location, last.heading)]
     tail = last.text[-overlap:]
     space = tail.find(" ")
     if 0 <= space < len(tail) - 1:
         tail = tail[space + 1 :]
-    return [_Piece(tail, last.location)]
+    return [_Piece(tail, last.location, last.heading)]
 
 
 def _is_only_overlap(current: list[_Piece], chunks: list[Chunk]) -> bool:
@@ -108,7 +110,23 @@ def _is_only_overlap(current: list[_Piece], chunks: list[Chunk]) -> bool:
 
 def _make_chunk(pieces: list[_Piece]) -> Chunk:
     text = "\n\n".join(p.text for p in pieces)
-    return Chunk(text, _location_range(pieces[0].location, pieces[-1].location))
+    return Chunk(text, _location_range(pieces[0].location, pieces[-1].location),
+                 heading_range(pieces[0].heading, pieces[-1].heading))
+
+
+def heading_range(first: str, last: str) -> str:
+    """"A > B > 1" and "A > B > 4" become "A > B > 1-4"; the shared part is said once."""
+    if first == last or not last:
+        return first
+    if not first:
+        return last
+    a, b = first.split(" > "), last.split(" > ")
+    same = 0
+    while same < min(len(a), len(b)) - 1 and a[same] == b[same]:
+        same += 1
+    head = " > ".join(a[:same])
+    tail = f"{' > '.join(a[same:])}-{' > '.join(b[same:])}"
+    return f"{head} > {tail}" if head else tail
 
 
 def _location_range(first: str, last: str) -> str:

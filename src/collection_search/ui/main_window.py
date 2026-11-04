@@ -321,6 +321,9 @@ class MainWindow(QMainWindow):
     def _refresh_claude_state(self) -> None:
         if claude_config.is_installed():
             text = "Claude Desktop is set up. Restart Claude Desktop if you just connected it."
+        elif claude_config.has_old_entry():
+            text = ("This version shows up in Claude as \"my-documents\". Click Add to Claude Desktop to "
+                    "update the connection, then quit and reopen Claude Desktop.")
         else:
             text = ("Not connected yet. Click Add to Claude Desktop, then restart Claude Desktop. "
                     "Or paste this into its config file yourself:")
@@ -333,7 +336,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Could not update Claude's config", str(exc))
             return
         self._refresh_claude_state()
-        QMessageBox.information(self, "Connected", f"Added Collection Search to {path}.\n\n"
+        QMessageBox.information(self, "Connected", f"Added Collection Search to {path} as \"{claude_config.SERVER_KEY}\".\n\n"
                                 "Quit and reopen Claude Desktop to load it.")
 
     # ---- events -------------------------------------------------------------------------

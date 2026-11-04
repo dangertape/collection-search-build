@@ -20,21 +20,34 @@ import threading
 import uvicorn
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
 
 from . import __version__
 from .addons import ToolContext, ToolSpec, bind
 from .engine import NotReady
 from .parsers import ParseError
-from .search import NotAllowed, NothingToCompare
+from .search import LocationNotFound, NotAllowed, NothingToCompare
 
 log = logging.getLogger(__name__)
 
 DEFAULT_PORT = 47821
-SERVER_NAME = "collection-search"
+SERVER_NAME = "my-documents"
 INSTRUCTIONS = (
-    "Searches the user's local documents. Only collections the user has switched on in the "
-    "Collection Search app are visible; call list_collections to see them."
+    "Searches the user's own notes and documents stored on their computer (Markdown, Word, PDF and "
+    "text files), through the Collection Search app. Use these tools when the user mentions their "
+    "notes, documents, files, study materials or collections; they are not for images or other media. "
+    "Only collections the user has switched on are visible; list_document_collections shows them. "
+    "Be thorough: run several searches with different wording, ask for 20 or more results on research "
+    "questions, follow links and backlinks with get_document_links or explore_documents, and read "
+    "passages in context with read_document before answering. Every tool only reads; none change files."
 )
+
+
+def annotations(spec: ToolSpec) -> ToolAnnotations:
+    """Tell Claude every tool only reads local files, so the app can treat them as safe."""
+    title = spec.title or spec.name.replace("_", " ").capitalize()
+    return ToolAnnotations(title=title, readOnlyHint=True, destructiveHint=False,
+                           idempotentHint=True, openWorldHint=False)
 
 
 def disabled_message(name: str) -> str:
@@ -50,7 +63,8 @@ def build_server(engine, specs: list[ToolSpec]) -> MCPServer:
             raise ToolError(disabled_message(name))
 
     for spec in specs:
-        server.add_tool(_friendly_errors(bind(spec, ctx, gate)), name=spec.name, description=spec.description)
+        server.add_tool(_friendly_errors(bind(spec, ctx, gate)), name=spec.name, title=spec.title or None,
+                        description=spec.description, annotations=annotations(spec))
     return server
 
 
@@ -62,7 +76,7 @@ def _friendly_errors(fn):
     def wrapper(**kwargs):
         try:
             return fn(**kwargs)
-        except (NotReady, NotAllowed, NothingToCompare, ParseError) as exc:
+        except (NotReady, NotAllowed, NothingToCompare, LocationNotFound, ParseError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
 
     return wrapper

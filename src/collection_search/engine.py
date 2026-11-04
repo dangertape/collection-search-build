@@ -158,13 +158,29 @@ class Engine:
             self.request_sync()
 
     def search(self, query: str, limit: int) -> list[search_core.Result]:
-        with self._guard():
-            return self._search(query, limit)
+        return self.search_page(query, limit)[0]
 
-    def read_file(self, path: str) -> search_core.FileText:
+    def search_page(self, query: str, limit: int, offset: int = 0) -> tuple[list[search_core.Result], bool]:
+        with self._guard():
+            return self._search(query, limit, offset)
+
+    def read_file(self, path: str, around: str | None = None, context: int = 4) -> search_core.FileText:
         with self._guard():
             store, _ = self._for_query()
-            return search_core.read_file(store, path, self.settings.active_collections())
+            return search_core.read_file(store, path, self.settings.active_collections(),
+                                         around=around, context=context)
+
+    def document_links(self, path: str, limit: int = 30) -> dict:
+        with self._guard():
+            store, _ = self._for_query()
+            return search_core.document_links(store, path, self.settings.active_collections(), limit)
+
+    def explore(self, query: str | None, path: str | None, steps: int = 2, max_documents: int = 15) -> dict:
+        with self._guard():
+            store, embedder = self._for_query()
+            with self._embed_lock:
+                return search_core.explore(store, _Locked(embedder, self._embed_lock, held=True),
+                                           self.settings.active_collections(), query, path, steps, max_documents)
 
     def find_similar(self, path: str, limit: int, passages: int = 2) -> search_core.SimilarResult:
         with self._guard():
@@ -172,13 +188,13 @@ class Engine:
             limit = max(1, min(limit, self.settings.preferences.max_result_count))
             return search_core.find_similar(store, path, self.settings.active_collections(), limit, passages)
 
-    def _search(self, query: str, limit: int) -> list[search_core.Result]:
+    def _search(self, query: str, limit: int, offset: int = 0) -> tuple[list[search_core.Result], bool]:
         store, embedder = self._for_query()
         prefs = self.settings.preferences
         limit = max(1, min(limit, prefs.max_result_count))
         with self._embed_lock:
-            return search_core.search(store, _Locked(embedder, self._embed_lock, held=True), query,
-                                      self.settings.active_collections(), limit)
+            return search_core.search_page(store, _Locked(embedder, self._embed_lock, held=True), query,
+                                           self.settings.active_collections(), limit, offset=offset)
 
     def active_collection_names(self) -> list[str]:
         return [c.name for c in self.settings.active_collections()]

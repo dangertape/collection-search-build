@@ -29,14 +29,25 @@ TOOLS = "tools"  # a tool was switched on or off
 
 Listener = Callable[[str], None]
 
+SETTINGS_VERSION = 2
+# Version 2 renamed the tools so Claude tells them apart from other apps'
+# "collections"; a tool's on/off switch follows it to the new name.
+RENAMED_TOOLS = {
+    "search": "search_documents",
+    "read_file": "read_document",
+    "find_similar": "find_similar_documents",
+    "list_collections": "list_document_collections",
+}
+OLD_RESULT_COUNTS = (8, 25)  # version 1 defaults, raised to the new ones
+
 
 @dataclass
 class Preferences:
     model: str = DEFAULT_MODEL
     chunk_size: int = DEFAULT_SIZE
     chunk_overlap: int = DEFAULT_OVERLAP
-    default_result_count: int = 8
-    max_result_count: int = 25
+    default_result_count: int = 15
+    max_result_count: int = 50
     rescan_minutes: int = 10
     watch_folders: bool = True
 
@@ -86,7 +97,7 @@ class Settings:
 
     def _to_dict(self) -> dict:
         return {
-            "version": 1,
+            "version": SETTINGS_VERSION,
             "collections": [_collection_to_dict(c) for c in self._collections],
             "tools": dict(self._tools),
             "preferences": asdict(self.preferences),
@@ -97,6 +108,12 @@ class Settings:
         self._tools = {str(k): bool(v) for k, v in data.get("tools", {}).items()}
         known = {f.name for f in fields(Preferences)}
         self.preferences = Preferences(**{k: v for k, v in data.get("preferences", {}).items() if k in known})
+        if data.get("version", 1) < 2:
+            self._tools = {RENAMED_TOOLS.get(k, k): v for k, v in self._tools.items()}
+            p = self.preferences
+            if (p.default_result_count, p.max_result_count) == OLD_RESULT_COUNTS:
+                fresh = Preferences()
+                p.default_result_count, p.max_result_count = fresh.default_result_count, fresh.max_result_count
         self._index_key = _index_key(self.preferences)
 
     # ---- listeners ----------------------------------------------------------

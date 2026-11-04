@@ -56,7 +56,7 @@ def test_broken_file_is_set_aside(tmp_path):
     s = Settings.load(str(path))
     assert s.collections() == []
     assert (tmp_path / "settings.json.broken").exists()
-    assert json.loads(path.read_text())["version"] == 1
+    assert json.loads(path.read_text())["version"] == 2
 
 
 def test_unknown_preferences_ignored(tmp_path):

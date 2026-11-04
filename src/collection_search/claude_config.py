@@ -9,7 +9,8 @@ import sys
 
 from .paths import is_frozen, program_dir
 
-SERVER_KEY = "collection-search"
+SERVER_KEY = "my-documents"  # the connector's name in Claude
+OLD_SERVER_KEYS = ("collection-search",)  # earlier names, replaced when connecting
 SHIM_EXE = "collection-search-mcp.exe"
 
 
@@ -38,8 +39,22 @@ def is_installed(path: str | None = None) -> bool:
         return False
 
 
+def has_old_entry(path: str | None = None) -> bool:
+    """True when Claude's config still uses an earlier name for this app."""
+    path = path or claude_config_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            servers = json.load(f).get("mcpServers", {})
+    except (OSError, ValueError, AttributeError):
+        return False
+    return any(key in servers for key in OLD_SERVER_KEYS)
+
+
 def install(path: str | None = None) -> str:
-    """Add or update our entry, keeping everything else. Backs up the old file first."""
+    """Add or update our entry, keeping everything else. Backs up the old file first.
+
+    An entry under an earlier name is removed, so Claude doesn't load the app twice.
+    """
     path = path or claude_config_path()
     data: dict = {}
     if os.path.exists(path):
@@ -49,7 +64,10 @@ def install(path: str | None = None) -> str:
         shutil.copyfile(path, path + ".bak")
     if not isinstance(data, dict):
         raise ValueError("Claude's config file is not a JSON object; edit it by hand.")
-    data.setdefault("mcpServers", {})[SERVER_KEY] = shim_command()
+    servers = data.setdefault("mcpServers", {})
+    for key in OLD_SERVER_KEYS:
+        servers.pop(key, None)
+    servers[SERVER_KEY] = shim_command()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
