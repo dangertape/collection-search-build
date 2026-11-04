@@ -9,6 +9,7 @@ from typing import Callable, Iterable
 from .chunking import DEFAULT_OVERLAP, DEFAULT_SIZE, chunk_sections
 from .collections import Collection
 from .embeddings import Embedder
+from .links import extract as extract_links
 from .parsers import ParseError, parse
 from .store import Store, path_key
 
@@ -88,14 +89,16 @@ def sync(
         if progress:
             progress(done, len(todo), path)
         try:
-            chunks = chunk_sections(parse(path), chunk_size, chunk_overlap)
+            sections = parse(path)
+            chunks = chunk_sections(sections, chunk_size, chunk_overlap)
             vectors = embedder.embed_documents([c.text for c in chunks]) if chunks else []
+            links = extract_links(path, sections)
             error = None if chunks else "No text found (scanned or empty file?)"
         except ParseError as exc:
-            chunks, vectors, error = [], [], str(exc)
+            chunks, vectors, links, error = [], [], [], str(exc)
         if error:
             result.errors.append((path, error))
-        store.replace_file(path, size, mtime, chunks, vectors, error)
+        store.replace_file(path, size, mtime, chunks, vectors, error, links)
         if existed:
             result.updated += 1
         else:

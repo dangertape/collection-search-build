@@ -19,7 +19,7 @@ import sqlite_vec
 
 from .chunking import Chunk
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: chunk headings and the links table
 
 
 @dataclass(frozen=True)
@@ -37,6 +37,18 @@ class ChunkHit:
     location: str
     text: str
     score: float
+    heading: str = ""
+    file_id: int = 0
+
+
+@dataclass(frozen=True)
+class LinkRow:
+    file_id: int  # the file the link is in
+    kind: str
+    target: str
+    label: str
+    location: str
+    heading: str
 
 
 def default_db_path() -> str:
@@ -52,17 +64,24 @@ class Store:
         if path != ":memory:":
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         self.db = sqlite3.connect(path, check_same_thread=False)
+        try:
+            self._open(model_name, dim, reset_if_model_changed)
+        except BaseException:
+            self.db.close()  # don't leave the file held open (it may need moving aside)
+            raise
+
+    def _open(self, model_name: str, dim: int, reset_if_model_changed: bool) -> None:
         self.db.enable_load_extension(True)
         sqlite_vec.load(self.db)
         self.db.enable_load_extension(False)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
+        self._upgrade_schema()
         self._create_schema()
         try:
             self._check_model(model_name, dim)
         except ModelMismatch:
             if not reset_if_model_changed:
-                self.db.close()
                 raise
             self.reset(model_name, dim)
         self.dim = dim
@@ -72,6 +91,20 @@ class Store:
         self.db.close()
 
     # ---- schema -------------------------------------------------------
+    def _upgrade_schema(self) -> None:
+        """An index from an older version is emptied, so every file is indexed again with the new fields."""
+        self.db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        row = self.db.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
+        if row is None or row[0] == str(SCHEMA_VERSION):
+            return
+        with self.db:
+            for statement in ("DROP TRIGGER IF EXISTS chunks_ai", "DROP TRIGGER IF EXISTS chunks_ad",
+                              "DROP TABLE IF EXISTS chunks_fts", "DROP TABLE IF EXISTS links",
+                              "DROP TABLE IF EXISTS doc_vectors", "DROP TABLE IF EXISTS vectors",
+                              "DROP TABLE IF EXISTS chunks", "DROP TABLE IF EXISTS files"):
+                self.db.execute(statement)
+            self.db.execute("UPDATE meta SET value = ? WHERE key = 'schema'", (str(SCHEMA_VERSION),))
+
     def _create_schema(self) -> None:
         self.db.executescript(
             """
@@ -90,7 +123,8 @@ class Store:
                 file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
                 ord INTEGER NOT NULL,
                 location TEXT NOT NULL,
-                text TEXT NOT NULL
+                text TEXT NOT NULL,
+                heading TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS chunks_file ON chunks(file_id);
             CREATE TABLE IF NOT EXISTS vectors (
@@ -103,6 +137,17 @@ class Store:
                 file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
                 embedding BLOB NOT NULL
             );
+            -- Links and verse references found in each file (see links.py).
+            CREATE TABLE IF NOT EXISTS links (
+                file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL,
+                target TEXT NOT NULL,
+                label TEXT NOT NULL,
+                location TEXT NOT NULL,
+                heading TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS links_file ON links(file_id);
+            CREATE INDEX IF NOT EXISTS links_target ON links(target);
             CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
                 text, content='chunks', content_rowid='id', tokenize='unicode61 remove_diacritics 2'
             );
@@ -175,6 +220,7 @@ class Store:
         chunks: Sequence[Chunk],
         vectors: Sequence[Sequence[float]],
         error: str | None = None,
+        links: Sequence = (),
     ) -> None:
         """Insert or replace one file and all its chunks in a single transaction."""
         if len(chunks) != len(vectors):
@@ -190,13 +236,17 @@ class Store:
             file_id = cur.lastrowid
             for ord_, (chunk, vec) in enumerate(zip(chunks, vectors)):
                 cid = self.db.execute(
-                    "INSERT INTO chunks(file_id, ord, location, text) VALUES (?, ?, ?, ?)",
-                    (file_id, ord_, chunk.location, chunk.text),
+                    "INSERT INTO chunks(file_id, ord, location, text, heading) VALUES (?, ?, ?, ?, ?)",
+                    (file_id, ord_, chunk.location, chunk.text, getattr(chunk, "heading", "")),
                 ).lastrowid
                 self.db.execute(
                     "INSERT INTO vectors(chunk_id, embedding) VALUES (?, ?)",
                     (cid, sqlite_vec.serialize_float32(list(vec))),
                 )
+            self.db.executemany(
+                "INSERT INTO links(file_id, kind, target, label, location, heading) VALUES (?, ?, ?, ?, ?, ?)",
+                [(file_id, l.kind, l.target, l.label, l.location, l.heading) for l in links],
+            )
             if doc_vec is not None:
                 self.db.execute("INSERT INTO doc_vectors(file_id, embedding) VALUES (?, ?)",
                                 (file_id, doc_vec.tobytes()))
@@ -227,7 +277,7 @@ class Store:
         rows = self.db.execute(
             """
             SELECT c.id, f.path, c.location, c.text,
-                   vec_distance_cosine(v.embedding, ?) AS distance
+                   vec_distance_cosine(v.embedding, ?) AS distance, c.heading, c.file_id
             FROM chunks c
             JOIN temp.allowed a ON a.id = c.file_id
             JOIN files f ON f.id = c.file_id
@@ -238,7 +288,8 @@ class Store:
             (sqlite_vec.serialize_float32(list(query_vec)), limit),
         ).fetchall()
         # A zero query vector has no direction; its distances come back NULL.
-        return [ChunkHit(cid, path, loc, text, 1.0 - dist) for cid, path, loc, text, dist in rows if dist is not None]
+        return [ChunkHit(cid, path, loc, text, 1.0 - dist, head, fid)
+                for cid, path, loc, text, dist, head, fid in rows if dist is not None]
 
     def keyword_search(self, query: str, file_ids: Iterable[int], limit: int) -> list[ChunkHit]:
         match = fts_query(query)
@@ -247,7 +298,7 @@ class Store:
         self._with_allowed(file_ids)
         rows = self.db.execute(
             """
-            SELECT c.id, f.path, c.location, c.text, bm25(chunks_fts) AS rank
+            SELECT c.id, f.path, c.location, c.text, bm25(chunks_fts) AS rank, c.heading, c.file_id
             FROM chunks_fts
             JOIN chunks c ON c.id = chunks_fts.rowid
             JOIN temp.allowed a ON a.id = c.file_id
@@ -258,7 +309,32 @@ class Store:
             """,
             (match, limit),
         ).fetchall()
-        return [ChunkHit(cid, path, loc, text, -rank) for cid, path, loc, text, rank in rows]
+        return [ChunkHit(cid, path, loc, text, -rank, head, fid) for cid, path, loc, text, rank, head, fid in rows]
+
+    # ---- links ----------------------------------------------------------------
+    def links_from(self, file_id: int) -> list[LinkRow]:
+        rows = self.db.execute(
+            "SELECT file_id, kind, target, label, location, heading FROM links WHERE file_id = ? ORDER BY rowid",
+            (file_id,),
+        ).fetchall()
+        return [LinkRow(*r) for r in rows]
+
+    def links_to(self, targets: Sequence[str]) -> list[LinkRow]:
+        if not targets:
+            return []
+        marks = ",".join("?" * len(targets))
+        rows = self.db.execute(
+            f"SELECT file_id, kind, target, label, location, heading FROM links WHERE target IN ({marks}) "
+            "ORDER BY file_id, rowid",
+            list(targets),
+        ).fetchall()
+        return [LinkRow(*r) for r in rows]
+
+    def chunk_headings(self, file_id: int) -> list[tuple[str, str, str]]:
+        """(location, heading, text) of a file's chunks, in order."""
+        return self.db.execute(
+            "SELECT location, heading, text FROM chunks WHERE file_id = ? ORDER BY ord", (file_id,)
+        ).fetchall()
 
     # ---- similar documents ------------------------------------------------
     def doc_vector(self, file_id: int) -> np.ndarray | None:

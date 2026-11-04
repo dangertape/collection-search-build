@@ -9,3 +9,4 @@ dist/
 *.db-shm
 .pytest_cache/
 questions.csv
+models/

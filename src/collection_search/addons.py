@@ -2,7 +2,8 @@
 
 A tool file defines:
 
-    NAME = "search"                       # what Claude calls it
+    NAME = "search_documents"             # what Claude calls it
+    TITLE = "Search documents"            # optional: the name people see in Claude's permission prompts
     DESCRIPTION = "..."                   # what Claude reads to decide when to use it
     def handler(ctx, query: str, limit: int = 8) -> dict | list | str: ...
 
@@ -10,7 +11,8 @@ The handler's parameters after `ctx` (with type hints, optionally
 Annotated[..., Field(description=...)]) become the tool's input schema.
 `ctx` is a ToolContext: the only way a tool reaches documents, and every
 method on it is already limited to the active collections. No tool takes a
-collection argument, so a tool cannot widen the scope.
+collection argument, so a tool cannot widen the scope. Nothing on `ctx` can
+change a file, so every tool is marked read-only for Claude.
 
 Built-in tools live in the collection_search.tools package. User add-ons are
 .py files in a `tools` folder next to the program or in the settings folder.
@@ -38,6 +40,7 @@ class ToolSpec:
     description: str
     handler: Callable[..., Any]
     source: str  # "built-in" or the add-on file path
+    title: str = ""  # friendly name for Claude's permission prompts
 
 
 class ToolContext:
@@ -46,14 +49,29 @@ class ToolContext:
     def __init__(self, engine):
         self._engine = engine
 
-    def search(self, query: str, limit: int | None = None) -> list[dict]:
+    def search(self, query: str, limit: int | None = None, offset: int = 0) -> list[dict]:
+        return self.search_page(query, limit, offset)[0]
+
+    def search_page(self, query: str, limit: int | None = None, offset: int = 0) -> tuple[list[dict], bool]:
+        """One page of results and whether more follow."""
         if limit is None:
             limit = self._engine.settings.preferences.default_result_count
-        return [asdict(r) | {"collections": list(r.collections)} for r in self._engine.search(query, limit)]
+        results, more = self._engine.search_page(query, limit, offset)
+        return [_result(r) for r in results], more
 
-    def read_file(self, path: str) -> dict:
-        f = self._engine.read_file(path)
-        return {"path": f.path, "collections": list(f.collections), "text": f.text, "truncated": f.truncated}
+    def read_file(self, path: str, around: str | None = None, context: int = 4) -> dict:
+        f = self._engine.read_file(path, around, context)
+        out = {"path": f.path, "collections": list(f.collections), "text": f.text, "truncated": f.truncated}
+        if f.shown:
+            out["shown"] = f.shown
+        return out
+
+    def document_links(self, path: str, limit: int = 30) -> dict:
+        return self._engine.document_links(path, limit)
+
+    def explore(self, query: str | None = None, path: str | None = None, steps: int = 2,
+                max_documents: int = 15) -> dict:
+        return self._engine.explore(query, path, steps, max_documents)
 
     def find_similar(self, path: str, limit: int | None = None, passages: int = 2) -> dict:
         if limit is None:
@@ -68,6 +86,13 @@ class ToolContext:
 
     def active_collections(self) -> list[str]:
         return self._engine.active_collection_names()
+
+
+def _result(r) -> dict:
+    out = asdict(r) | {"collections": list(r.collections)}
+    if not out.get("heading"):
+        out.pop("heading", None)
+    return out
 
 
 def load_tools(extra_dirs: list[str] | None = None) -> list[ToolSpec]:
@@ -112,7 +137,8 @@ def _add(specs: dict[str, ToolSpec], module: ModuleType, source: str) -> None:
     if name in specs:
         log.warning("Tool %r from %s ignored: %s already defines it", name, source, specs[name].source)
         return
-    specs[name] = ToolSpec(name, description.strip(), handler, source)
+    title = getattr(module, "TITLE", "")
+    specs[name] = ToolSpec(name, description.strip(), handler, source, title if isinstance(title, str) else "")
 
 
 def bind(spec: ToolSpec, ctx: ToolContext, before_call: Callable[[str], None]) -> Callable[..., Any]:

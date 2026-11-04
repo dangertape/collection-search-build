@@ -9,6 +9,15 @@
 # Build from the repo root:  pyinstaller packaging/collection_search.spec --noconfirm
 
 import os
+import sys
+
+# Conda Pythons keep the DLLs that extension modules need (libexpat, ffi,
+# ssl, sqlite...) in Library\bin, which is only on PATH in an activated
+# shell. Put it on PATH so PyInstaller finds and bundles them; otherwise the
+# app fails at start-up with "DLL load failed while importing pyexpat".
+_conda_bin = os.path.join(sys.base_prefix, "Library", "bin")
+if os.name == "nt" and os.path.isdir(_conda_bin):
+    os.environ["PATH"] = _conda_bin + os.pathsep + os.environ.get("PATH", "")
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 

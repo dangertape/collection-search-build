@@ -9,7 +9,17 @@ Full design: *Collection Search for Claude — Design* in the project files.
 - **Collections.** A collection is a set of folders plus filters: excluded subfolders, file types, a modified-date range and filename patterns. Each one has an on/off checkbox in the window and in the tray menu.
 - **Search.** The app indexes PDF, Word, text and Markdown files on your PC. It ranks passages by meaning (a local embedding model, no cloud) and by exact words, then combines the two rankings.
 - **Similar documents.** Pick a document and the app lists the documents most like it, with the passages that match. It works in two layers. Each file has one whole-document vector (the average of its passage vectors), which finds files about the same thing overall. Some of the file's passages are also searched on their own, which finds files that share one strong section but are otherwise about something else. Each result's score mixes the two, and its best matching passages are shown next to the part of your file they match. Use the **Similar** tab, or ask Claude to find documents like one it found.
-- **Tools for Claude.** `search`, `read_file`, `find_similar` and `list_collections`. None of them takes a collection argument, so Claude can't widen the scope. Each tool has its own on/off switch. A tool that is off returns a short error on Claude's next call, in the same chat.
+- **Headings in results.** For Markdown and Word files, each passage carries the headings above it, such as `Exodus 20 > 4-6`, so Claude can cite it without opening the file.
+- **Links and verse references.** While indexing, the app records `[[wikilinks]]`, Markdown links to other files, and Bible verse references such as `Exod 20:4` or `1 Cor 8:4-6`. A chapter file named like `Exod-20.md` or `Exodus 20.md` counts as linked from every note that mentions a verse in that chapter.
+- **Tools for Claude.** The connector is called **my-documents** in Claude, and every tool name says "document" so Claude doesn't confuse it with other apps' "collections":
+  - `search_documents`: passages by meaning and exact words, 15 by default and up to 50, at most 3 per file per page, with `offset` for the next page.
+  - `read_document`: a whole file, or with `around` just the part at a result's location or heading plus a few sections either side.
+  - `find_similar_documents`: documents like one document.
+  - `get_document_links`: what a document links to, what links back to it, and the verses it mentions.
+  - `explore_documents`: starts from a query or a file and follows links, backlinks, verse references and similar documents one to three steps out, in one call.
+  - `list_document_collections`: the collections that are switched on.
+
+  None of them takes a collection argument, so Claude can't widen the scope. Every tool is marked read-only, which Claude Desktop uses to group them in its tool permissions. Each tool has its own on/off switch. A tool that is off returns a short error on Claude's next call, in the same chat.
 - **Add-on tools.** Drop a `.py` file into a `tools` folder and restart. See [Writing an add-on tool](#writing-an-add-on-tool).
 - **Background indexing.** The app watches the folders for changes, rescans every 10 minutes to catch anything missed, and lists files it couldn't read on the Status tab.
 
@@ -21,26 +31,31 @@ Full design: *Collection Search for Claude — Design* in the project files.
 4. On the **Status** tab, click **Add to Claude Desktop**, then quit and reopen Claude Desktop. This adds the entry below to `%APPDATA%\Claude\claude_desktop_config.json` and backs up the old file first:
 
    ```json
-   { "mcpServers": { "collection-search": { "command": "C:\\...\\CollectionSearch\\collection-search-mcp.exe" } } }
+   { "mcpServers": { "my-documents": { "command": "C:\\...\\CollectionSearch\\collection-search-mcp.exe" } } }
    ```
 
 5. Ask Claude about your documents.
+6. The first time Claude uses each tool, Claude Desktop asks for permission. Choose **Always allow** to stop it asking again. The tools only read, and only from collections that are switched on.
+
+Upgrading from a version that showed up in Claude as `collection-search`: click **Add to Claude Desktop** again. It replaces the old entry with `my-documents`. Claude Desktop treats it as a new connector, so choose **Always allow** once more. The first start also re-indexes everything once, to add headings and links.
 
 Closing the window hides it to the tray. Use **Quit** in the tray menu to stop the app. To start it at sign-in, choose that option in the installer, or put a shortcut to `CollectionSearch.exe --tray` in your Startup folder.
 
 ## How Claude reaches the app
 
-Claude Desktop starts MCP servers itself over stdin/stdout, but this app is already running with its window and tray. So Claude Desktop launches the small `collection-search-mcp.exe` instead. That program forwards each message to the app on `127.0.0.1`. The app listens only on that local address and checks a random token from `%APPDATA%\CollectionSearch\connection.json`. If the app isn't running, Claude gets the message "Collection Search is not running" instead of a hang.
+Claude Desktop starts MCP servers itself over stdin/stdout, but this app is already running with its window and tray. So Claude Desktop launches the small `collection-search-mcp.exe` instead. That program forwards each message to the app on `127.0.0.1`. The app listens only on that local address and checks a random token from `%USERPROFILE%\.collection-search\connection.json`. If the app isn't running, Claude gets the message "Collection Search is not running" instead of a hang.
 
 ## Where things are stored
 
 | What | Where |
 | --- | --- |
-| Settings (collections, tool switches) | `%APPDATA%\CollectionSearch\settings.json` |
-| Connection file (port and token) | `%APPDATA%\CollectionSearch\connection.json`, removed when the app quits |
-| Index | `%LOCALAPPDATA%\CollectionSearch\index.db` |
-| Search model | `%LOCALAPPDATA%\CollectionSearch\models`, or a `models` folder next to the .exe |
-| Log | `%LOCALAPPDATA%\CollectionSearch\app.log` |
+| Settings (collections, tool switches) | `%USERPROFILE%\.collection-search\settings.json` |
+| Connection file (port and token) | `%USERPROFILE%\.collection-search\connection.json`, removed when the app quits |
+| Index | `%USERPROFILE%\.collection-search\index.db` |
+| Search model | `%USERPROFILE%\.collection-search\models`, or a `models` folder next to the .exe |
+| Log | `%USERPROFILE%\.collection-search\app.log` |
+
+These are kept outside AppData because Claude Desktop is a packaged app: programs it starts see a private copy of AppData, so the app and its connector would otherwise disagree about where its files are.
 
 Your document folders are never written to.
 
@@ -75,7 +90,7 @@ The tests use a small offline word-hash embedder and run the UI without a screen
 
 ## Writing an add-on tool
 
-Put a file like this in `tools\` next to `CollectionSearch.exe`, or in `%APPDATA%\CollectionSearch\tools\`. Then restart the app. Claude sees the new tool in a new chat.
+Put a file like this in `tools\` next to `CollectionSearch.exe`, or in `%USERPROFILE%\.collection-search\tools\`. Then restart the app. Claude sees the new tool in a new chat.
 
 ```python
 from typing import Annotated
@@ -90,7 +105,7 @@ def handler(ctx, customer: Annotated[str, Field(description="Customer name")]) -
     return {"invoices": [h["path"] for h in hits]}
 ```
 
-The parameters after `ctx` become the tool's inputs. `ctx` has only three methods, `search(query, limit)`, `read_file(path)` and `active_collections()`, and all three are already limited to the active collections. Return material, not instructions. Claude treats instructions inside tool results with caution.
+The parameters after `ctx` become the tool's inputs. `ctx` has `search(query, limit, offset)`, `read_file(path, around, context)`, `find_similar(path, limit)`, `document_links(path)`, `explore(query, path)` and `active_collections()`, and all of them are already limited to the active collections. An optional `TITLE` sets the name shown in Claude's permission prompts. Return material, not instructions. Claude treats instructions inside tool results with caution.
 
 ## Code layout
 
@@ -102,7 +117,8 @@ The parameters after `ctx` become the tool's inputs. `ctx` has only three method
 | `store.py` | SQLite holding files, chunks, passage and document vectors (sqlite-vec) and FTS5 keywords |
 | `collections.py` | Collection rules: index-time (folders, types) and search-time (dates, patterns) |
 | `indexer.py` | Diff by path, size and mtime; parse, chunk, embed, store |
-| `search.py` | Scoped hybrid search, `find_similar` and `read_file`; always receives the active collections |
+| `links.py` | Finds links and Bible verse references in a file's text, and names Bible chapter files |
+| `search.py` | Scoped hybrid search with paging, `find_similar`, `read_file`, links and explore; always receives the active collections |
 | `settings.py` | JSON settings, one lock, change notifications |
 | `engine.py` | Model, per-thread index connections, indexer thread, periodic rescan |
 | `watcher.py` | Folder watching with debounce |

@@ -17,6 +17,7 @@ class Section:
 
     text: str
     location: str  # e.g. "page 3" or "paragraph 12"
+    heading: str = ""  # the headings above this text, e.g. "Exodus 20 > 4" (Markdown and Word)
 
 
 class ParseError(Exception):
