@@ -234,12 +234,18 @@ class HttpServer:
         self._uvicorn.should_exit = True
         if self._thread:
             self._thread.join(5)
+        # Read and close the file before removing it: Windows can't delete an
+        # open file, and a leftover file made the connector think the app was running.
         try:
             with open(self.connection_file, encoding="utf-8") as f:
-                if json.load(f).get("token") == self.token:
-                    os.remove(self.connection_file)
+                ours = json.load(f).get("token") == self.token
         except (OSError, ValueError):
-            pass
+            return
+        if ours:
+            try:
+                os.remove(self.connection_file)
+            except OSError:
+                log.warning("Could not remove %s", self.connection_file)
 
     def _write_connection_file(self) -> None:
         tmp = self.connection_file + ".tmp"
