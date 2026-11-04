@@ -1,4 +1,4 @@
-"""Where the app keeps its files.
+r"""Where the app keeps its files.
 
 On Windows everything lives in %USERPROFILE%\.collection-search, not in
 AppData. Claude Desktop installs as a packaged (MSIX) app, and programs it

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import time
 
@@ -104,9 +105,9 @@ class MainWindow(QMainWindow):
 
     def add_collection(self) -> None:
         names = {c.name for c in self.settings.collections()}
-        dialog = CollectionDialog(existing_names=names, parent=self)
-        if dialog.exec():
-            self.settings.upsert_collection(dialog.result_collection())
+        result = _run_dialog(CollectionDialog(existing_names=names, parent=self))
+        if result:
+            self.settings.upsert_collection(result)
 
     def edit_collection(self) -> None:
         cid = self._selected_collection_id()
@@ -114,9 +115,9 @@ class MainWindow(QMainWindow):
         if not collection:
             return
         names = {c.name for c in self.settings.collections() if c.id != cid}
-        dialog = CollectionDialog(collection, names, parent=self)
-        if dialog.exec():
-            self.settings.upsert_collection(dialog.result_collection())
+        result = _run_dialog(CollectionDialog(collection, names, parent=self))
+        if result:
+            self.settings.upsert_collection(result)
 
     def delete_collection(self) -> None:
         cid = self._selected_collection_id()
@@ -348,3 +349,18 @@ class MainWindow(QMainWindow):
         else:
             event.ignore()  # closing the window hides it; Quit is in the tray menu
             self.hide()
+
+
+def _run_dialog(dialog: CollectionDialog):
+    """Show the dialog and return its collection (None if cancelled), then dispose of it here.
+
+    A closed dialog's widgets form reference cycles that only the garbage collector
+    frees. Left alone, a collection can run on the indexer thread, which destroys Qt
+    widgets off the UI thread and crashes the app. So collect them now, on this thread.
+    """
+    result = dialog.result_collection() if dialog.exec() else None
+    dialog.setParent(None)
+    dialog.deleteLater()
+    del dialog
+    gc.collect()
+    return result
