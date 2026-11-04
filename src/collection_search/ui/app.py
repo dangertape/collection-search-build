@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import os
 import sys
+import time
 
 from PySide6.QtCore import QLockFile
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -37,7 +39,8 @@ def main(args: list[str]) -> int:
     lock = QLockFile(paths.lock_path())
     lock.setStaleLockTime(0)
     if not lock.tryLock(100):
-        _ask_running_instance_to_show()
+        if not _started_by_connector():  # the connector only wanted it running; it is
+            _ask_running_instance_to_show()
         return 0
 
     settings = Settings.load(paths.settings_path())
@@ -85,11 +88,25 @@ def main(args: list[str]) -> int:
     http.start()
     log.info("Started; MCP server at %s", http.url)
 
-    if "--tray" not in args or tray is None:
+    in_tray = "--tray" in args or _started_by_connector()
+    if not in_tray or tray is None:
         show_window()
     code = app.exec()
     lock.unlock()
     return code
+
+
+def _started_by_connector() -> bool:
+    """True when Claude's connector just started the app; it then stays in the tray."""
+    from ..shim import LAUNCH_MARKER
+
+    marker = os.path.join(paths.roaming_dir(), LAUNCH_MARKER)
+    try:
+        fresh = time.time() - os.path.getmtime(marker) < 120
+        os.remove(marker)
+    except OSError:
+        return False
+    return fresh
 
 
 def _ask_running_instance_to_show() -> None:
@@ -102,6 +119,9 @@ def _ask_running_instance_to_show() -> None:
 
 
 def _setup_logging() -> None:
+    from ..mcp_server import harden_logging
+
+    harden_logging()
     handler = logging.handlers.RotatingFileHandler(paths.log_path(), maxBytes=1_000_000, backupCount=2,
                                                    encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))

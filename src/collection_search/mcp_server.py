@@ -69,24 +69,66 @@ def build_server(engine, specs: list[ToolSpec]) -> MCPServer:
 
 
 def _friendly_errors(fn):
-    """Turn expected failures into short messages Claude can relay."""
+    """Turn failures into short messages Claude can relay.
+
+    Nothing a tool does may escape as an exception: an unexpected error that
+    reaches the MCP library can take down its whole request handler, after
+    which every request fails until the app restarts.
+    """
     import functools
 
     @functools.wraps(fn)
     def wrapper(**kwargs):
         try:
             return fn(**kwargs)
+        except ToolError:
+            raise
         except (NotReady, NotAllowed, NothingToCompare, LocationNotFound, ParseError, ValueError) as exc:
-            raise ToolError(str(exc)) from exc
+            raise ToolError(_safe_text(str(exc))) from None
+        except Exception as exc:
+            log.exception("Tool %s failed", fn.__name__)
+            raise ToolError(f"Collection Search hit an error: {_safe_text(type(exc).__name__)}. "
+                            "Try again, or try another file.") from None
 
     return wrapper
 
 
-class _TokenCheck:
-    """ASGI middleware: every request must carry the app's bearer token."""
+def harden_logging() -> None:
+    """A log line must never break a request.
 
-    def __init__(self, app, token: str):
+    On Windows the app's stderr can use a code page that can't write "？" or
+    emoji, which file names are full of. A failing log write then raised out of
+    the MCP library's own logging call and stopped its request handler. Make
+    the streams replace what they can't write, and make logging swallow its
+    own errors.
+    """
+    import sys
+
+    logging.raiseExceptions = False
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(errors="backslashreplace")
+            except (OSError, ValueError, AttributeError):
+                pass
+
+
+def _safe_text(text: str) -> str:
+    """Text that survives any console or log encoding."""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+class _TokenCheck:
+    """ASGI middleware: every request must carry the app's bearer token.
+
+    It also notices when the MCP library's request handler has died (it then
+    answers every request with "Task group is not initialized") and asks the
+    server to restart itself, so Claude reconnects on its next try.
+    """
+
+    def __init__(self, app, token: str, on_broken=None):
         self.app, self.expected = app, f"Bearer {token}".encode()
+        self.on_broken = on_broken
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
@@ -96,35 +138,58 @@ class _TokenCheck:
                             "headers": [(b"content-type", b"text/plain")]})
                 await send({"type": "http.response.body", "body": b"Unauthorized"})
                 return
+            try:
+                await self.app(scope, receive, send)
+            except RuntimeError as exc:
+                if "Task group is not initialized" in str(exc) and self.on_broken:
+                    log.error("MCP request handler stopped; restarting the server for Claude")
+                    self.on_broken()
+                raise
+            return
         await self.app(scope, receive, send)
 
 
 class HttpServer:
-    """Runs the MCP server on its own thread with its own event loop."""
+    """Runs the MCP server on its own thread with its own event loop.
+
+    If the MCP library's handler dies, the server is rebuilt and restarted on
+    the same port and token, so Claude's connector keeps working.
+    """
 
     def __init__(self, server: MCPServer, connection_file: str, port: int = DEFAULT_PORT):
         self.token = secrets.token_urlsafe(32)
         self.connection_file = connection_file
+        self._server = server
         self._sock = _bind(port)
         self.port = self._sock.getsockname()[1]
-        app = server.streamable_http_app(json_response=True, stateless_http=True, host="127.0.0.1")
-        config = uvicorn.Config(_TokenCheck(app, self.token), log_level="warning", lifespan="on",
+        self._uvicorn = self._make_uvicorn()
+        self._thread: threading.Thread | None = None
+        self._restart_lock = threading.Lock()
+        self._restarting = False
+        self._stopped = False
+        self.restarts = 0
+
+    def _make_uvicorn(self) -> "uvicorn.Server":
+        app = self._server.streamable_http_app(json_response=True, stateless_http=True, host="127.0.0.1")
+        config = uvicorn.Config(_TokenCheck(app, self.token, self._broken), log_level="warning", lifespan="on",
             # uvicorn's own console logging crashes in the windowed .exe (no
             # stdout); its loggers go through the app's log file instead.
             log_config=None,
         )
-        self._uvicorn = uvicorn.Server(config)
-        self._thread: threading.Thread | None = None
+        return uvicorn.Server(config)
 
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}/mcp"
 
     def start(self) -> None:
+        self._run_thread()
+        self._write_connection_file()
+
+    def _run_thread(self) -> None:
         self._thread = threading.Thread(target=self._uvicorn.run, kwargs={"sockets": [self._sock]},
                                         name="mcp", daemon=True)
         self._thread.start()
-        self._write_connection_file()
 
     def wait_started(self, timeout: float = 10) -> bool:
         import time
@@ -136,7 +201,36 @@ class HttpServer:
             time.sleep(0.05)
         return False
 
+    def _broken(self) -> None:
+        with self._restart_lock:
+            if self._restarting or self._stopped:
+                return
+            self._restarting = True
+        threading.Thread(target=self._restart, name="mcp-restart", daemon=True).start()
+
+    def _restart(self) -> None:
+        try:
+            self._uvicorn.should_exit = True
+            if self._thread:
+                self._thread.join(10)
+            if self._stopped:
+                return
+            self._sock = _bind(self.port)
+            self.port = self._sock.getsockname()[1]
+            self._uvicorn = self._make_uvicorn()
+            self._run_thread()
+            self.wait_started()
+            self._write_connection_file()
+            self.restarts += 1
+            log.info("MCP server restarted at %s", self.url)
+        except Exception:
+            log.exception("Could not restart the MCP server")
+        finally:
+            with self._restart_lock:
+                self._restarting = False
+
     def stop(self) -> None:
+        self._stopped = True
         self._uvicorn.should_exit = True
         if self._thread:
             self._thread.join(5)
