@@ -169,12 +169,79 @@ def test_shim_end_to_end(app, tmp_path):
     assert not os.path.exists(str(tmp_path / "home" / "connection.json"))
 
 
-def test_shim_reports_app_not_running(tmp_path, monkeypatch):
+@pytest.fixture
+def no_app(tmp_path, monkeypatch):
+    """No app running; starting one is recorded instead of done."""
     monkeypatch.setenv("COLLECTION_SEARCH_HOME", str(tmp_path))
+    monkeypatch.setattr(shim, "APP_WAIT_SECONDS", 0.5)
+    monkeypatch.setattr(shim, "_launched", False)
+    launches = []
+    monkeypatch.setattr(shim.subprocess, "Popen", lambda args, **kw: launches.append(args))
+    return launches
+
+
+def test_shim_reports_app_not_running(no_app):
     reply = json.loads(shim.forward(b'{"jsonrpc":"2.0","id":7,"method":"tools/list"}'))
     assert reply["id"] == 7 and "not running" in reply["error"]["message"]
     assert shim.forward(b'{"jsonrpc":"2.0","method":"notifications/initialized"}') is None
     assert json.loads(shim.forward(b"not json"))["error"]["code"] == -32700
+    assert len(no_app) == 1  # tried to start the app, once
+
+
+def test_shim_answers_initialize_without_the_app(no_app, tmp_path):
+    """Claude's first message must never wait on the app, or Claude marks the connector failed."""
+    start = time.time()
+    reply = json.loads(shim.forward(
+        b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'))
+    assert time.time() - start < 2
+    assert reply["id"] == 1 and reply["result"]["protocolVersion"] == "2025-06-18"
+    assert reply["result"]["capabilities"]["tools"] is not None
+    assert json.loads(shim.forward(b'{"jsonrpc":"2.0","id":2,"method":"ping"}'))["result"] == {}
+    assert no_app and (tmp_path / shim.LAUNCH_MARKER).exists()
+
+
+def test_shim_uses_saved_answers_while_app_starts(app, tmp_path, no_app, monkeypatch):
+    """Answers saved while the app was up are reused when it is away."""
+    server, *_ = app
+    http = HttpServer(server, str(tmp_path / "home" / "connection.json"), port=0)
+    http.start()
+    assert http.wait_started()
+    monkeypatch.setenv("COLLECTION_SEARCH_HOME", str(tmp_path / "home"))
+    try:
+        init = b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18",' \
+               b'"capabilities":{},"clientInfo":{"name":"t","version":"1"}}}'
+        live_init = json.loads(shim.forward(init))
+        live_tools = json.loads(shim.forward(b'{"jsonrpc":"2.0","id":2,"method":"tools/list"}'))
+        assert "search_documents" in {t["name"] for t in live_tools["result"]["tools"]}
+    finally:
+        http.stop()
+    saved_init = json.loads(shim.forward(init))
+    assert saved_init["result"]["instructions"] == live_init["result"]["instructions"]
+    saved_tools = json.loads(shim.forward(b'{"jsonrpc":"2.0","id":3,"method":"tools/list"}'))
+    assert saved_tools["id"] == 3 and saved_tools["result"] == live_tools["result"]
+    call = json.loads(shim.forward(b'{"jsonrpc":"2.0","id":4,"method":"tools/call",'
+                                   b'"params":{"name":"search_documents","arguments":{"query":"x"}}}'))
+    assert call["id"] == 4 and "error" in call  # app gone and not coming back in the test
+    assert len(no_app) == 1
+
+
+def test_shim_waits_for_a_starting_app(app, tmp_path, no_app, monkeypatch):
+    """A tool call made while the app is starting is answered once it is up."""
+    import threading
+
+    server, *_ = app
+    monkeypatch.setattr(shim, "APP_WAIT_SECONDS", 10)
+    monkeypatch.setenv("COLLECTION_SEARCH_HOME", str(tmp_path / "home"))
+    http = HttpServer(server, str(tmp_path / "home" / "connection.json"), port=0)
+    timer = threading.Timer(1.5, lambda: (http.start(), http.wait_started()))
+    timer.start()
+    try:
+        reply = json.loads(shim.forward(b'{"jsonrpc":"2.0","id":5,"method":"tools/call",'
+                                        b'"params":{"name":"list_document_collections","arguments":{}}}'))
+        assert reply["id"] == 5 and "result" in reply
+    finally:
+        timer.join()
+        http.stop()
 
 
 def test_wrong_token_rejected(app, tmp_path):
@@ -244,3 +311,90 @@ def test_new_tools_over_mcp(app):
     assert is_error(call(server, "explore_documents", {}))
     result = call(server, "read_document", {"path": str(docs / "on" / "notes.md"), "around": "nowhere"})
     assert is_error(result) and "Could not find" in text_of(result)
+
+
+def test_server_restarts_itself_when_the_mcp_handler_dies(app, tmp_path):
+    """If the MCP library's handler stops, the app rebuilds it instead of failing every request."""
+    import urllib.request
+
+    server, *_ = app
+    http = HttpServer(server, str(tmp_path / "home" / "connection.json"), port=0)
+    http.start()
+    assert http.wait_started()
+
+    def post():
+        with open(tmp_path / "home" / "connection.json") as f:
+            conn = json.load(f)
+        req = urllib.request.Request(conn["url"], data=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                                     method="POST", headers={"Authorization": f"Bearer {conn['token']}",
+                                                             "Content-Type": "application/json",
+                                                             "Accept": "application/json, text/event-stream"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status
+
+    try:
+        assert post() == 200
+        server._lowlevel_server._session_manager._task_group = None  # what the crash left behind
+        with pytest.raises(Exception):
+            post()
+        end = time.time() + 15
+        while http.restarts == 0 and time.time() < end:
+            time.sleep(0.1)
+        assert http.restarts == 1
+        assert post() == 200
+    finally:
+        http.stop()
+
+
+def test_unexpected_tool_error_does_not_escape(app, monkeypatch):
+    server, settings, engine, *_ = app
+
+    def boom(*a, **k):
+        raise UnicodeEncodeError("charmap", "？", 0, 1, "character maps to <undefined>")
+    monkeypatch.setattr(engine, "read_file", boom)
+    result = call(server, "read_document", {"path": "x？.md"})
+    assert is_error(result)
+    assert not is_error(call(server, "list_document_collections", {}))
+
+
+def test_odd_characters_in_logs_cannot_break_the_server(app, tmp_path, monkeypatch):
+    """The 4:59 PM crash: a refused path with "？" logged to a cp1252 stderr killed the MCP handler."""
+    import io
+    import logging
+    import urllib.request
+
+    from collection_search.mcp_server import harden_logging
+
+    server, *_ = app
+    cp1252 = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")  # strict, like the Windows build's stderr
+    monkeypatch.setattr(sys, "stderr", cp1252)
+    handler = logging.StreamHandler()  # on sys.stderr, as the app adds it
+    root = logging.getLogger()
+    root.addHandler(handler)
+    old_level, old_raise = root.level, logging.raiseExceptions
+    root.setLevel(logging.INFO)  # as in the app
+    harden_logging()
+    http = HttpServer(server, str(tmp_path / "home" / "connection.json"), port=0)
+    http.start()
+    assert http.wait_started()
+
+    def post(body):
+        conn = json.loads((tmp_path / "home" / "connection.json").read_text())
+        req = urllib.request.Request(conn["url"], data=body, method="POST",
+                                     headers={"Authorization": f"Bearer {conn['token']}",
+                                              "Content-Type": "application/json",
+                                              "Accept": "application/json, text/event-stream"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read())
+
+    try:
+        bad = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "read_document", "arguments": {"path": "C:\\\\x\\\\Why Is That\uff1f.en.md"}}}).encode()
+        assert post(bad)["result"]["isError"]
+        assert "result" in post(b'{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
+        assert http.restarts == 0  # never broke in the first place
+    finally:
+        http.stop()
+        root.removeHandler(handler)
+        root.setLevel(old_level)
+        logging.raiseExceptions = old_raise
