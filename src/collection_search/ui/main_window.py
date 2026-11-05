@@ -1,21 +1,24 @@
-"""Main window: Collections, Tools and Status tabs."""
+"""Main window: Search, Similar, Collections, Tools and Status tabs."""
 
 from __future__ import annotations
 
 import gc
 import os
+import subprocess
+import sys
 import time
 
-from PySide6.QtCore import QObject, Qt, QUrl, Signal
+from PySide6.QtCore import QObject, QPoint, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QFileDialog, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
+    QAbstractItemView, QApplication, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
     QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .. import claude_config
 from ..addons import ToolSpec
+from ..collections import Collection
 from ..engine import Engine, NotReady, Status
 from ..search import NotAllowed, NothingToCompare
 from ..settings import SCOPE, TOOLS, Settings
@@ -23,6 +26,9 @@ from .collection_dialog import CollectionDialog
 from .icon import app_icon
 
 ID_ROLE = Qt.UserRole
+TICKED, EVERYTHING = "", "*"  # collection picker choices besides single collections
+PAGE_SIZE = 20  # search results shown at a time
+SNIPPET = 400  # characters of a passage shown in the results list
 
 
 class Bridge(QObject):
@@ -48,9 +54,15 @@ class MainWindow(QMainWindow):
         engine.on_status(self.bridge.status.emit)
         settings.subscribe(self.bridge.settings_changed.emit)
 
+        self._pickers: list[QComboBox] = []
+        self._search_offset = 0
+        self._search_scope: list[Collection] | None = None
         self.tabs = QTabWidget()
+        self.search_page = self._search_tab()
+        self.similar_page = self._similar_tab()
+        self.tabs.addTab(self.search_page, "Search")
+        self.tabs.addTab(self.similar_page, "Similar")
         self.tabs.addTab(self._collections_tab(), "Collections")
-        self.tabs.addTab(self._similar_tab(), "Similar")
         self.tabs.addTab(self._tools_tab(), "Tools")
         self.tabs.addTab(self._status_tab(), "Status")
         self.setCentralWidget(self.tabs)
@@ -131,27 +143,186 @@ class MainWindow(QMainWindow):
         if answer == QMessageBox.Yes:
             self.settings.delete_collection(cid)
 
+    # ---- collection picker (Search and Similar tabs) -----------------------------------
+    def _scope_picker(self) -> QComboBox:
+        combo = QComboBox()
+        combo.setToolTip("Which collections to look in. Here you can search any collection, "
+                         "ticked or not; Claude only ever sees the ticked ones.")
+        combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self._pickers.append(combo)
+        self._fill_picker(combo)
+        return combo
+
+    def _fill_picker(self, combo: QComboBox) -> None:
+        current = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("Ticked collections", TICKED)
+        combo.addItem("All collections", EVERYTHING)
+        for c in self.settings.collections():
+            combo.addItem(c.name if c.active else f"{c.name} (not ticked)", c.id)
+        index = combo.findData(current) if current is not None else 0
+        combo.setCurrentIndex(max(0, index))
+        combo.blockSignals(False)
+
+    def _picked(self, combo: QComboBox) -> list[Collection] | None:
+        """The collections a picker points at; None means the ticked ones."""
+        choice = combo.currentData()
+        if choice in (None, TICKED):
+            return None
+        if choice == EVERYTHING:
+            return self.settings.collections()
+        collection = self.settings.get_collection(choice)
+        return [collection] if collection else []
+
+    # ---- Search -----------------------------------------------------------------------
+    def _search_tab(self) -> QWidget:
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText("Search your documents: a question, a topic or exact words")
+        self.search_box.setClearButtonEnabled(True)
+        self.search_box.returnPressed.connect(self.run_search)
+        self.search_scope = self._scope_picker()
+        go = QPushButton("Search")
+        go.clicked.connect(self.run_search)
+        row = QHBoxLayout()
+        row.addWidget(self.search_box, 1)
+        row.addWidget(self.search_scope)
+        row.addWidget(go)
+        self.search_message = QLabel("Results are ranked by meaning and by exact words. "
+                                     "Double-click a result to open it, or right-click for more.")
+        self.search_message.setWordWrap(True)
+        self.search_results = self._results_tree(["Passage", "Score", "Collections"])
+        self.search_results.setRootIsDecorated(False)
+        self.search_results.itemSelectionChanged.connect(self._search_selection_changed)
+        self.search_open = QPushButton("Open")
+        self.search_open.clicked.connect(lambda: self._open_selected(self.search_results))
+        self.search_similar = QPushButton("Find similar")
+        self.search_similar.setToolTip("Documents most like the selected one, on the Similar tab")
+        self.search_similar.clicked.connect(self._similar_from_search)
+        self.search_more = QPushButton("More results")
+        self.search_more.clicked.connect(lambda: self.run_search(more=True))
+        self.search_more.hide()
+        bottom = QHBoxLayout()
+        bottom.addWidget(self.search_open)
+        bottom.addWidget(self.search_similar)
+        bottom.addStretch()
+        bottom.addWidget(self.search_more)
+        self._search_selection_changed()
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.addLayout(row)
+        layout.addWidget(self.search_message)
+        layout.addWidget(self.search_results)
+        layout.addLayout(bottom)
+        return tab
+
+    def run_search(self, more: bool = False) -> None:
+        if more:
+            query, scope = self._search_query, self._search_scope
+        else:
+            query, scope = self.search_box.text().strip(), self._picked(self.search_scope)
+            self._search_query, self._search_scope, self._search_offset = query, scope, 0
+            self.search_results.clear()
+            self.search_more.hide()
+        if not query:
+            return
+        if scope == [] or (scope is None and not self.settings.active_collections()):
+            self.search_message.setText("No collections to search. Tick one on the Collections tab, "
+                                        "or pick a collection next to the search box.")
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            results, has_more = self.engine.search_page(query, PAGE_SIZE, self._search_offset, collections=scope)
+        except NotReady as exc:
+            self.search_message.setText(str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._search_offset += len(results)
+        for r in results:
+            self.search_results.addTopLevelItem(_result_item(r))
+        shown = self.search_results.topLevelItemCount()
+        if not shown:
+            self.search_message.setText(f"Nothing found for \"{query}\".")
+        else:
+            self.search_message.setText(f"{shown}{'+' if has_more else ''} passages for \"{query}\". "
+                                        "Double-click a result to open it, or right-click for more.")
+        self.search_more.setVisible(has_more)
+        if not more and shown:
+            self.search_results.setCurrentItem(self.search_results.topLevelItem(0))
+
+    def _search_selection_changed(self) -> None:
+        picked = bool(_selected_path(self.search_results))
+        self.search_open.setEnabled(picked)
+        self.search_similar.setEnabled(picked)
+
+    def _similar_from_search(self) -> None:
+        path = _selected_path(self.search_results)
+        if not path:
+            return
+        index = self.similar_scope.findData(self.search_scope.currentData())
+        self.similar_scope.setCurrentIndex(max(0, index))
+        self.show_similar(path)
+
+    def show_similar(self, path: str) -> None:
+        """Switch to the Similar tab and list documents like `path`."""
+        self.tabs.setCurrentWidget(self.similar_page)
+        self.similar_path.setText(path)
+        self.find_similar()
+
+    # ---- results lists (Search and Similar tabs) ---------------------------------------
+    def _results_tree(self, headers: list[str]) -> QTreeWidget:
+        tree = QTreeWidget()
+        tree.setHeaderLabels(headers)
+        tree.setWordWrap(True)
+        tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        tree.header().setStretchLastSection(False)
+        tree.itemDoubleClicked.connect(self._open_similar)
+        tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        tree.customContextMenuRequested.connect(lambda pos: self._result_menu(tree, pos))
+        return tree
+
+    def _result_menu(self, tree: QTreeWidget, pos: QPoint) -> None:
+        item = tree.itemAt(pos)
+        path = item.data(0, ID_ROLE) if item else None
+        if not path:
+            return
+        menu = QMenu(tree)
+        menu.addAction("Open", lambda: _open_path(path))
+        menu.addAction("Find similar", lambda: self._similar_from_menu(tree, path))
+        menu.addAction("Show in folder", lambda: _show_in_folder(path))
+        menu.addAction("Copy path", lambda: QGuiApplication.clipboard().setText(path))
+        menu.exec(tree.viewport().mapToGlobal(pos))
+
+    def _similar_from_menu(self, tree: QTreeWidget, path: str) -> None:
+        if tree is self.search_results:
+            index = self.similar_scope.findData(self.search_scope.currentData())
+            self.similar_scope.setCurrentIndex(max(0, index))
+        self.show_similar(path)
+
+    def _open_selected(self, tree: QTreeWidget) -> None:
+        path = _selected_path(tree)
+        if path:
+            _open_path(path)
+
     # ---- Similar ----------------------------------------------------------------------
     def _similar_tab(self) -> QWidget:
         self.similar_path = QLineEdit()
         self.similar_path.setPlaceholderText("Path of a document in a ticked collection")
         self.similar_path.returnPressed.connect(self.find_similar)
+        self.similar_scope = self._scope_picker()
         browse, find = QPushButton("Browse…"), QPushButton("Find similar")
         browse.clicked.connect(self._browse_similar)
         find.clicked.connect(self.find_similar)
         row = QHBoxLayout()
         row.addWidget(self.similar_path, 1)
         row.addWidget(browse)
+        row.addWidget(self.similar_scope)
         row.addWidget(find)
         self.similar_message = QLabel("Documents most like the one you pick, with the passages that match. "
                                       "Double-click a result to open it.")
         self.similar_message.setWordWrap(True)
-        self.similar_results = QTreeWidget()
-        self.similar_results.setHeaderLabels(["Document", "Score", "Collections"])
-        self.similar_results.setWordWrap(True)
-        self.similar_results.header().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.similar_results.header().setStretchLastSection(False)
-        self.similar_results.itemDoubleClicked.connect(self._open_similar)
+        self.similar_results = self._results_tree(["Document", "Score", "Collections"])
         again = QPushButton("Find similar to selected")
         again.clicked.connect(self._similar_to_selected)
         bottom = QHBoxLayout()
@@ -178,14 +349,15 @@ class MainWindow(QMainWindow):
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            result = self.engine.find_similar(path, self.settings.preferences.max_result_count, passages=3)
+            result = self.engine.find_similar(path, self.settings.preferences.max_result_count, passages=3,
+                                              collections=self._picked(self.similar_scope))
         except (NotReady, NotAllowed, NothingToCompare) as exc:
             self.similar_message.setText(str(exc))
             return
         finally:
             QApplication.restoreOverrideCursor()
         if not result.results:
-            self.similar_message.setText("No other documents in the ticked collections to compare with.")
+            self.similar_message.setText("No other documents in these collections to compare with.")
             return
         self.similar_message.setText(f"{len(result.results)} documents most like {os.path.basename(result.source)}. "
                                      "Double-click a result to open it.")
@@ -204,7 +376,7 @@ class MainWindow(QMainWindow):
     def _open_similar(self, item: QTreeWidgetItem, _column: int = 0) -> None:
         path = item.data(0, ID_ROLE)
         if path:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+            _open_path(path)
 
     def _similar_to_selected(self) -> None:
         items = self.similar_results.selectedItems()
@@ -343,6 +515,8 @@ class MainWindow(QMainWindow):
     def _settings_changed(self, kind: str) -> None:
         if kind == SCOPE:
             self.refresh_collections()
+            for combo in self._pickers:
+                self._fill_picker(combo)
         elif kind == TOOLS:
             self.refresh_tools()
 
@@ -352,6 +526,34 @@ class MainWindow(QMainWindow):
         else:
             event.ignore()  # closing the window hides it; Quit is in the tray menu
             self.hide()
+
+
+def _result_item(r) -> QTreeWidgetItem:
+    """One search result: file name and where in it, then the start of the passage."""
+    where = r.heading or r.location
+    text = " ".join(r.text.split())
+    snippet = text if len(text) <= SNIPPET else text[:SNIPPET].rsplit(" ", 1)[0] + " …"
+    item = QTreeWidgetItem([f"{os.path.basename(r.path)}  ·  {where}\n{snippet}", f"{r.score:.3f}",
+                            ", ".join(r.collections)])
+    item.setData(0, ID_ROLE, r.path)
+    item.setToolTip(0, f"{r.path}  ({r.location})\n\n{text[:1500]}")
+    return item
+
+
+def _selected_path(tree: QTreeWidget) -> str | None:
+    items = tree.selectedItems()
+    return items[0].data(0, ID_ROLE) if items else None
+
+
+def _open_path(path: str) -> None:
+    QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+
+def _show_in_folder(path: str) -> None:
+    if sys.platform == "win32" and os.path.exists(path):
+        subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+    else:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
 
 
 def _run_dialog(dialog: CollectionDialog):

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field, replace
 from typing import Callable
 
 from . import search as search_core
+from .collections import Collection
 from .embeddings import Embedder, FastEmbedder
 from .indexer import sync
 from .settings import INDEX, Settings
@@ -164,9 +165,11 @@ class Engine:
     def search(self, query: str, limit: int) -> list[search_core.Result]:
         return self.search_page(query, limit)[0]
 
-    def search_page(self, query: str, limit: int, offset: int = 0) -> tuple[list[search_core.Result], bool]:
+    def search_page(self, query: str, limit: int, offset: int = 0,
+                    collections: list[Collection] | None = None) -> tuple[list[search_core.Result], bool]:
+        """`collections` narrows the search; None means the ticked collections (what Claude sees)."""
         with self._guard():
-            return self._search(query, limit, offset)
+            return self._search(query, limit, offset, collections)
 
     def read_file(self, path: str, around: str | None = None, context: int = 4) -> search_core.FileText:
         with self._guard():
@@ -186,19 +189,29 @@ class Engine:
                 return search_core.explore(store, _Locked(embedder, self._embed_lock, held=True),
                                            self.settings.active_collections(), query, path, steps, max_documents)
 
-    def find_similar(self, path: str, limit: int, passages: int = 2) -> search_core.SimilarResult:
+    def find_similar(self, path: str, limit: int, passages: int = 2,
+                     collections: list[Collection] | None = None) -> search_core.SimilarResult:
         with self._guard():
             store, _ = self._for_query()
             limit = max(1, min(limit, self.settings.preferences.max_result_count))
-            return search_core.find_similar(store, path, self.settings.active_collections(), limit, passages)
+            return search_core.find_similar(store, path, self._scope(collections), limit, passages)
 
-    def _search(self, query: str, limit: int, offset: int = 0) -> tuple[list[search_core.Result], bool]:
+    def _search(self, query: str, limit: int, offset: int = 0,
+                collections: list[Collection] | None = None) -> tuple[list[search_core.Result], bool]:
         store, embedder = self._for_query()
         prefs = self.settings.preferences
         limit = max(1, min(limit, prefs.max_result_count))
         with self._embed_lock:
             return search_core.search_page(store, _Locked(embedder, self._embed_lock, held=True), query,
-                                           self.settings.active_collections(), limit, offset=offset)
+                                           self._scope(collections), limit, offset=offset)
+
+    def _scope(self, collections: list[Collection] | None) -> list[Collection]:
+        """The collections a call searches. An explicit list is searched even if a collection is
+        unticked, because the window lets the user search any collection. Anything serving Claude
+        must pass only ticked collections, or None."""
+        if collections is None:
+            return self.settings.active_collections()
+        return [c if c.active else replace(c, active=True) for c in collections]
 
     def active_collection_names(self) -> list[str]:
         return [c.name for c in self.settings.active_collections()]
