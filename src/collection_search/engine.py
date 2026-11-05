@@ -22,6 +22,7 @@ from typing import Callable
 from . import search as search_core
 from .embeddings import Embedder, FastEmbedder
 from .indexer import sync
+from .collections import Collection
 from .settings import INDEX, Settings
 from .store import Store
 
@@ -166,9 +167,11 @@ class Engine:
     def search(self, query: str, limit: int) -> list[search_core.Result]:
         return self.search_page(query, limit)[0]
 
-    def search_page(self, query: str, limit: int, offset: int = 0) -> tuple[list[search_core.Result], bool]:
+    def search_page(self, query: str, limit: int, offset: int = 0,
+                    collections: list[Collection] | None = None) -> tuple[list[search_core.Result], bool]:
+        """`collections` limits the search to those; None means the active collections."""
         with self._guard():
-            return self._search(query, limit, offset)
+            return self._search(query, limit, offset, collections)
 
     def read_file(self, path: str, around: str | None = None, context: int = 4) -> search_core.FileText:
         with self._guard():
@@ -176,23 +179,25 @@ class Engine:
             return search_core.read_file(store, path, self.settings.active_collections(),
                                          around=around, context=context)
 
-    def document_links(self, path: str, limit: int = 30) -> dict:
+    def document_links(self, path: str, limit: int = 30, collections: list[Collection] | None = None) -> dict:
         with self._guard():
             store, _ = self._for_query()
-            return search_core.document_links(store, path, self.settings.active_collections(), limit)
+            return search_core.document_links(store, path, self._scope(collections), limit)
 
-    def explore(self, query: str | None, path: str | None, steps: int = 2, max_documents: int = 15) -> dict:
+    def explore(self, query: str | None, path: str | None, steps: int = 2, max_documents: int = 15,
+                collections: list[Collection] | None = None) -> dict:
         with self._guard():
             store, embedder = self._for_query()
             with self._embed_lock:
                 return search_core.explore(store, _Locked(embedder, self._embed_lock, held=True),
-                                           self.settings.active_collections(), query, path, steps, max_documents)
+                                           self._scope(collections), query, path, steps, max_documents)
 
-    def find_similar(self, path: str, limit: int, passages: int = 2) -> search_core.SimilarResult:
+    def find_similar(self, path: str, limit: int, passages: int = 2,
+                     collections: list[Collection] | None = None) -> search_core.SimilarResult:
         with self._guard():
             store, _ = self._for_query()
             limit = max(1, min(limit, self.settings.preferences.max_result_count))
-            return search_core.find_similar(store, path, self.settings.active_collections(), limit, passages)
+            return search_core.find_similar(store, path, self._scope(collections), limit, passages)
 
     def similarity_map(self, cancelled: Callable[[], bool] = lambda: False):
         """Map of the documents in the ticked collections (see similarity_map.py).
@@ -214,13 +219,19 @@ class Engine:
                 self._map = built
             return built
 
-    def _search(self, query: str, limit: int, offset: int = 0) -> tuple[list[search_core.Result], bool]:
+    def _search(self, query: str, limit: int, offset: int = 0,
+                collections: list[Collection] | None = None) -> tuple[list[search_core.Result], bool]:
         store, embedder = self._for_query()
         prefs = self.settings.preferences
         limit = max(1, min(limit, prefs.max_result_count))
         with self._embed_lock:
             return search_core.search_page(store, _Locked(embedder, self._embed_lock, held=True), query,
-                                           self.settings.active_collections(), limit, offset=offset)
+                                           self._scope(collections), limit, offset=offset)
+
+    def _scope(self, collections: list[Collection] | None) -> list[Collection]:
+        if collections is None:
+            return self.settings.active_collections()
+        return [c if c.active else replace(c, active=True) for c in collections]
 
     def active_collection_names(self) -> list[str]:
         return [c.name for c in self.settings.active_collections()]
