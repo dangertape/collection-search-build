@@ -20,9 +20,9 @@ from dataclasses import dataclass, field, replace
 from typing import Callable
 
 from . import search as search_core
-from .collections import Collection
 from .embeddings import Embedder, FastEmbedder
 from .indexer import sync
+from .collections import Collection
 from .settings import INDEX, Settings
 from .store import Store
 
@@ -167,7 +167,7 @@ class Engine:
 
     def search_page(self, query: str, limit: int, offset: int = 0,
                     collections: list[Collection] | None = None) -> tuple[list[search_core.Result], bool]:
-        """`collections` narrows the search; None means the ticked collections (what Claude sees)."""
+        """`collections` limits the search to those; None means the active collections."""
         with self._guard():
             return self._search(query, limit, offset, collections)
 
@@ -177,17 +177,18 @@ class Engine:
             return search_core.read_file(store, path, self.settings.active_collections(),
                                          around=around, context=context)
 
-    def document_links(self, path: str, limit: int = 30) -> dict:
+    def document_links(self, path: str, limit: int = 30, collections: list[Collection] | None = None) -> dict:
         with self._guard():
             store, _ = self._for_query()
-            return search_core.document_links(store, path, self.settings.active_collections(), limit)
+            return search_core.document_links(store, path, self._scope(collections), limit)
 
-    def explore(self, query: str | None, path: str | None, steps: int = 2, max_documents: int = 15) -> dict:
+    def explore(self, query: str | None, path: str | None, steps: int = 2, max_documents: int = 15,
+                collections: list[Collection] | None = None) -> dict:
         with self._guard():
             store, embedder = self._for_query()
             with self._embed_lock:
                 return search_core.explore(store, _Locked(embedder, self._embed_lock, held=True),
-                                           self.settings.active_collections(), query, path, steps, max_documents)
+                                           self._scope(collections), query, path, steps, max_documents)
 
     def find_similar(self, path: str, limit: int, passages: int = 2,
                      collections: list[Collection] | None = None) -> search_core.SimilarResult:
