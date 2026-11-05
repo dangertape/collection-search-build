@@ -21,6 +21,7 @@ from ..search import NotAllowed, NothingToCompare
 from ..settings import SCOPE, TOOLS, Settings
 from .collection_dialog import CollectionDialog
 from .icon import app_icon
+from .map_tab import MapTab
 
 ID_ROLE = Qt.UserRole
 
@@ -51,6 +52,8 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._collections_tab(), "Collections")
         self.tabs.addTab(self._similar_tab(), "Similar")
+        self.map_tab = MapTab(engine, self.show_similar)
+        self.tabs.addTab(self.map_tab, "Map")
         self.tabs.addTab(self._tools_tab(), "Tools")
         self.tabs.addTab(self._status_tab(), "Status")
         self.setCentralWidget(self.tabs)
@@ -201,6 +204,12 @@ class MainWindow(QMainWindow):
                 item.addChild(child)
             self.similar_results.addTopLevelItem(item)
 
+    def show_similar(self, path: str) -> None:
+        """Switch to the Similar tab and list the documents like `path` (used by the Map tab)."""
+        self.tabs.setCurrentWidget(self.similar_path.parentWidget())
+        self.similar_path.setText(path)
+        self.find_similar()
+
     def _open_similar(self, item: QTreeWidgetItem, _column: int = 0) -> None:
         path = item.data(0, ID_ROLE)
         if path:
@@ -297,6 +306,8 @@ class MainWindow(QMainWindow):
         return tab
 
     def _show_status(self, status: Status) -> None:
+        if status.state == "idle":
+            self.map_tab.mark_stale()  # the index may have changed; the map redraws only if it did
         self.status_label.setText(status.message)
         if status.state == "indexing" and status.total:
             self.progress.setRange(0, status.total)
@@ -343,6 +354,7 @@ class MainWindow(QMainWindow):
     def _settings_changed(self, kind: str) -> None:
         if kind == SCOPE:
             self.refresh_collections()
+            self.map_tab.mark_stale()
         elif kind == TOOLS:
             self.refresh_tools()
 
