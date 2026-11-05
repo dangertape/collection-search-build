@@ -19,7 +19,7 @@ Full design: *Collection Search for Claude — Design* in the project files.
   - `explore_documents`: starts from a query or a file and follows links, backlinks, verse references and similar documents one to three steps out, in one call.
   - `list_document_collections`: the collections that are switched on.
 
-  None of them takes a collection argument, so Claude can't widen the scope. Every tool is marked read-only, which Claude Desktop uses to group them in its tool permissions. Each tool has its own on/off switch. A tool that is off returns a short error on Claude's next call, in the same chat.
+  Search, explore, find-similar and links take an optional `collection` name to look in just one collection. Only switched-on collections can be named, so this only ever narrows the scope; Claude can't widen it. Every tool is marked read-only, which Claude Desktop uses to group them in its tool permissions. Each tool has its own on/off switch. A tool that is off returns a short error on Claude's next call, in the same chat.
 - **Add-on tools.** Drop a `.py` file into a `tools` folder and restart. See [Writing an add-on tool](#writing-an-add-on-tool).
 - **Background indexing.** The app watches the folders for changes, rescans every 10 minutes to catch anything missed, and lists files it couldn't read on the Status tab.
 

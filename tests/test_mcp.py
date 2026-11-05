@@ -70,7 +70,7 @@ def is_error(result):
     return getattr(result, "is_error", None) or getattr(result, "isError", False)
 
 
-def test_tool_list_has_no_collection_parameter(app):
+def test_collection_parameter_only_on_scoped_tools(app):
     server, *_ = app
 
     async def go():
@@ -78,9 +78,49 @@ def test_tool_list_has_no_collection_parameter(app):
     tools = {t.name: t for t in anyio.run(go)}
     assert set(tools) == {"search_documents", "read_document", "list_document_collections",
                           "find_similar_documents", "get_document_links", "explore_documents"}
+    narrowing = {"search_documents", "find_similar_documents", "get_document_links", "explore_documents"}
     for t in tools.values():
         schema = t.input_schema if hasattr(t, "input_schema") else t.inputSchema
-        assert not any("collection" in p for p in schema.get("properties", {}))
+        props = schema.get("properties", {})
+        assert ("collection" in props) == (t.name in narrowing)
+        assert not any("collection" in p for p in props if p != "collection")
+
+
+def test_search_one_collection(app):
+    server, settings, engine, docs, off = app
+    write(str(docs / "two" / "other.txt"), "The notice period here is 30 days.")
+    two = Collection("Second Set", [str(docs / "two")])
+    settings.upsert_collection(two)
+    engine.request_sync()
+    end = time.time() + 10
+    while time.time() < end:
+        data = json.loads(text_of(call(server, "search_documents", {"query": "notice period", "limit": 10})))
+        if any("other.txt" in r["path"] for r in data["results"]):
+            break
+        time.sleep(0.1)
+    paths = {r["path"] for r in data["results"]}
+    assert any("lease" in p for p in paths) and any("other" in p for p in paths)
+
+    data = json.loads(text_of(call(server, "search_documents",
+                                   {"query": "notice period", "limit": 10, "collection": " second set "})))
+    assert data["results"] and all("other" in r["path"] for r in data["results"])
+    assert all(r["collections"] == ["Second Set"] for r in data["results"])
+
+    links = json.loads(text_of(call(server, "explore_documents", {"query": "notice period", "collection": "On"})))
+    assert links["documents"] and all("lease" in d["path"] for d in links["documents"])
+
+
+def test_collection_cannot_reach_switched_off_or_unknown(app):
+    server, settings, engine, docs, off = app
+    for name in ["Off", "Nope"]:
+        result = call(server, "search_documents", {"query": "zebracorn", "collection": name})
+        assert is_error(result)
+        assert f'No switched-on collection is named "{name}"' in text_of(result)
+        assert text_of(result).endswith('Switched-on collections: "On".')
+    result = call(server, "find_similar_documents", {"path": str(docs / "off" / "secret.txt"), "collection": "On"})
+    assert is_error(result) and "not in an active collection" in text_of(result)
+    data = json.loads(text_of(call(server, "search_documents", {"query": "zebracorn", "collection": ""})))
+    assert all("secret" not in r["path"] for r in data["results"])
 
 
 def test_search_returns_only_active(app):
