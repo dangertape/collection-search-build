@@ -37,6 +37,7 @@ INSTRUCTIONS = (
     "text files), through the Collection Search app. Use these tools when the user mentions their "
     "notes, documents, files, study materials or collections; they are not for images or other media. "
     "Only collections the user has switched on are visible; list_document_collections shows them. "
+    "When the user asks about one collection by name, pass it as the collection argument to search only there. "
     "Be thorough: run several searches with different wording, ask for 20 or more results on research "
     "questions, follow links and backlinks with get_document_links or explore_documents, and read "
     "passages in context with read_document before answering. Every tool only reads; none change files."

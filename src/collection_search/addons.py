@@ -10,8 +10,9 @@ A tool file defines:
 The handler's parameters after `ctx` (with type hints, optionally
 Annotated[..., Field(description=...)]) become the tool's input schema.
 `ctx` is a ToolContext: the only way a tool reaches documents, and every
-method on it is already limited to the active collections. No tool takes a
-collection argument, so a tool cannot widen the scope. Nothing on `ctx` can
+method on it is already limited to the active collections. Some methods take
+a collection name, but only to narrow the scope to one active collection, so
+a tool cannot widen it. Nothing on `ctx` can
 change a file, so every tool is marked read-only for Claude.
 
 Built-in tools live in the collection_search.tools package. User add-ons are
@@ -49,14 +50,16 @@ class ToolContext:
     def __init__(self, engine):
         self._engine = engine
 
-    def search(self, query: str, limit: int | None = None, offset: int = 0) -> list[dict]:
-        return self.search_page(query, limit, offset)[0]
+    def search(self, query: str, limit: int | None = None, offset: int = 0,
+               collection: str | None = None) -> list[dict]:
+        return self.search_page(query, limit, offset, collection)[0]
 
-    def search_page(self, query: str, limit: int | None = None, offset: int = 0) -> tuple[list[dict], bool]:
-        """One page of results and whether more follow."""
+    def search_page(self, query: str, limit: int | None = None, offset: int = 0,
+                    collection: str | None = None) -> tuple[list[dict], bool]:
+        """One page of results and whether more follow. `collection` limits it to one active collection."""
         if limit is None:
             limit = self._engine.settings.preferences.default_result_count
-        results, more = self._engine.search_page(query, limit, offset)
+        results, more = self._engine.search_page(query, limit, offset, self._only(collection))
         return [_result(r) for r in results], more
 
     def read_file(self, path: str, around: str | None = None, context: int = 4) -> dict:
@@ -66,17 +69,18 @@ class ToolContext:
             out["shown"] = f.shown
         return out
 
-    def document_links(self, path: str, limit: int = 30) -> dict:
-        return self._engine.document_links(path, limit)
+    def document_links(self, path: str, limit: int = 30, collection: str | None = None) -> dict:
+        return self._engine.document_links(path, limit, self._only(collection))
 
     def explore(self, query: str | None = None, path: str | None = None, steps: int = 2,
-                max_documents: int = 15) -> dict:
-        return self._engine.explore(query, path, steps, max_documents)
+                max_documents: int = 15, collection: str | None = None) -> dict:
+        return self._engine.explore(query, path, steps, max_documents, self._only(collection))
 
-    def find_similar(self, path: str, limit: int | None = None, passages: int = 2) -> dict:
+    def find_similar(self, path: str, limit: int | None = None, passages: int = 2,
+                     collection: str | None = None) -> dict:
         if limit is None:
             limit = self._engine.settings.preferences.default_result_count
-        r = self._engine.find_similar(path, limit, passages)
+        r = self._engine.find_similar(path, limit, passages, self._only(collection))
         return {
             "source": r.source,
             "source_collections": list(r.source_collections),
@@ -86,6 +90,23 @@ class ToolContext:
 
     def active_collections(self) -> list[str]:
         return self._engine.active_collection_names()
+
+    def _only(self, collection: str | None):
+        """The switched-on collection named `collection`, as a one-item scope; None for all of them.
+
+        Only switched-on collections can be named, so a name only ever narrows
+        the scope. Names match ignoring case and spaces at the ends.
+        """
+        wanted = (collection or "").strip().casefold()
+        if not wanted:
+            return None
+        active = self._engine.settings.active_collections()
+        found = [c for c in active if c.name.strip().casefold() == wanted]
+        if not found:
+            names = ", ".join(f'"{c.name}"' for c in active) or "none"
+            raise ValueError(f'No switched-on collection is named "{collection.strip()}". '
+                             f"Switched-on collections: {names}.")
+        return found
 
 
 def _result(r) -> dict:
