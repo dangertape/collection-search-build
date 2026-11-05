@@ -113,6 +113,53 @@ def test_similar_tab(window, tmp_path):
     assert "not in an active collection" in w.similar_message.text()
 
 
+def _wait_files(engine, app, n):
+    end = time.time() + 10
+    while (engine.status().files < n or engine.status().state != "idle") and time.time() < end:
+        pump(app, 0.1)
+
+
+def test_search_tab_and_find_similar(window, tmp_path):
+    w, tray, settings, engine, app = window
+    write(str(tmp_path / "docs" / "b.txt"), "hello world of apples")
+    engine.request_sync()
+    _wait_files(engine, app, 2)
+    assert w.tabs.tabText(0) == "Search"
+    w.search_box.setText("apples")
+    w.run_search()
+    assert w.search_results.topLevelItemCount() >= 1
+    first = w.search_results.topLevelItem(0)
+    assert "b.txt" in first.text(0) and "apples" in first.text(0)
+    assert w.search_similar.isEnabled()
+    w._similar_from_search()
+    assert w.tabs.currentWidget() is w.similar_page
+    assert w.similar_path.text().endswith("b.txt")
+    assert "a.txt" in w.similar_results.topLevelItem(0).text(0)
+
+
+def test_search_picker_reaches_unticked_collections(window, tmp_path):
+    w, tray, settings, engine, app = window
+    write(str(tmp_path / "private" / "p.txt"), "secret pancake recipe")
+    private = Collection("Private", [str(tmp_path / "private")], active=False)
+    settings.upsert_collection(private)
+    pump(app, 0.2)
+    _wait_files(engine, app, 2)
+    labels = [w.search_scope.itemText(i) for i in range(w.search_scope.count())]
+    assert "Private (not ticked)" in labels
+
+    w.search_box.setText("pancake")
+    w.search_scope.setCurrentIndex(w.search_scope.findData(""))  # ticked only, as Claude sees it
+    w.run_search()
+    assert all("p.txt" not in w.search_results.topLevelItem(i).text(0)
+               for i in range(w.search_results.topLevelItemCount()))
+
+    w.search_scope.setCurrentIndex(w.search_scope.findData(private.id))
+    w.run_search()
+    assert "p.txt" in w.search_results.topLevelItem(0).text(0)
+    assert settings.active_collections()[0].name == "Docs"  # searching didn't tick it
+    assert all("p.txt" not in r.path for r in engine.search("pancake", 10))  # Claude still can't see it
+
+
 def test_map_tab(window, tmp_path):
     w, tray, settings, engine, app = window
     write(str(tmp_path / "docs" / "b.txt"), "hello world")
@@ -137,7 +184,7 @@ def test_map_tab(window, tmp_path):
     tab._doc_selected(i)
     assert tab.similar_button.isEnabled()
     tab._find_similar()
-    assert w.tabs.currentIndex() == 1 and w.similar_path.text().endswith("a.txt")
+    assert w.tabs.currentWidget() is w.similar_page and w.similar_path.text().endswith("a.txt")
     assert w.similar_results.topLevelItemCount() == 1
     # unticking the collection empties the map
     w.tabs.setCurrentWidget(w.map_tab)

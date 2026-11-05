@@ -229,6 +229,9 @@ class Engine:
                                            self._scope(collections), limit, offset=offset)
 
     def _scope(self, collections: list[Collection] | None) -> list[Collection]:
+        """The collections a call searches. An explicit list is searched even if a collection is
+        unticked, because the window lets the user search any collection. Anything serving Claude
+        must pass only ticked collections, or None."""
         if collections is None:
             return self.settings.active_collections()
         return [c if c.active else replace(c, active=True) for c in collections]
