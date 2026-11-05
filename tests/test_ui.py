@@ -158,3 +158,39 @@ def test_search_picker_reaches_unticked_collections(window, tmp_path):
     assert "p.txt" in w.search_results.topLevelItem(0).text(0)
     assert settings.active_collections()[0].name == "Docs"  # searching didn't tick it
     assert all("p.txt" not in r.path for r in engine.search("pancake", 10))  # Claude still can't see it
+
+
+def test_map_tab(window, tmp_path):
+    w, tray, settings, engine, app = window
+    write(str(tmp_path / "docs" / "b.txt"), "hello world")
+    engine.request_sync()
+    end = time.time() + 10
+    while engine.status().files < 2 and time.time() < end:
+        pump(app, 0.1)
+    w.show()
+    w.tabs.setCurrentWidget(w.map_tab)
+    end = time.time() + 10
+    while len(w.map_tab.map) < 2 and time.time() < end:
+        pump(app, 0.1)
+    tab = w.map_tab
+    assert len(tab.map) == 2 and tab.theme_list.count() == len(tab.map.themes)
+    tab.theme_list.setCurrentRow(0)
+    tab._pick_theme(0)
+    assert tab.doc_list.count() == tab.map.themes[0].size
+    i = next(k for k, p in enumerate(tab.map.paths) if p.endswith("a.txt"))
+    x, y = tab.canvas._screen[i]
+    assert tab.canvas.doc_at(x, y) == i
+    tab.canvas.select_doc(i)
+    tab._doc_selected(i)
+    assert tab.similar_button.isEnabled()
+    tab._find_similar()
+    assert w.tabs.currentWidget() is w.similar_page and w.similar_path.text().endswith("a.txt")
+    assert w.similar_results.topLevelItemCount() == 1
+    # unticking the collection empties the map
+    w.tabs.setCurrentWidget(w.map_tab)
+    w.collection_list.item(0).setCheckState(Qt.Unchecked)
+    end = time.time() + 10
+    while len(tab.map) and time.time() < end:
+        pump(app, 0.1)
+    assert len(tab.map) == 0
+    w.map_tab.shutdown()

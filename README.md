@@ -10,6 +10,7 @@ Full design: *Collection Search for Claude — Design* in the project files.
 - **Search.** The app indexes PDF, Word, text and Markdown files on your PC. It ranks passages by meaning (a local embedding model, no cloud) and by exact words, then combines the two rankings.
 - **Search in the app.** The **Search** tab takes a question, a topic or exact words and lists the best passages, ranked the same way Claude's searches are. The box next to it picks where to look: the ticked collections (what Claude sees), all collections, or one collection, including one that isn't ticked. Searching an unticked collection here doesn't show it to Claude. Double-click a result to open the file, use **Find similar** to list documents like it on the **Similar** tab, or right-click for **Show in folder** and **Copy path**. **More results** loads the next page.
 - **Similar documents.** Pick a document and the app lists the documents most like it, with the passages that match. It works in two layers. Each file has one whole-document vector (the average of its passage vectors), which finds files about the same thing overall. Some of the file's passages are also searched on their own, which finds files that share one strong section but are otherwise about something else. Each result's score mixes the two, and its best matching passages are shown next to the part of your file they match. Use the **Similar** tab, or ask Claude to find documents like one it found.
+- **Map.** The **Map** tab draws every document in the ticked collections as a dot, with documents about the same thing grouped into named themes. Click a theme to list its documents, most typical first, or click a dot to see the documents next to it. Double-click to open a file, or use **Find similar** to jump to the Similar tab. Drag to move and scroll to zoom. The map uses the document vectors the index already has, so it embeds nothing and reads no files, and 35,000 documents draw in a few seconds. It redraws when you tick or untick a collection or when indexing finishes with changes.
 - **Headings in results.** For Markdown and Word files, each passage carries the headings above it, such as `Exodus 20 > 4-6`, so Claude can cite it without opening the file.
 - **Links and verse references.** While indexing, the app records `[[wikilinks]]`, Markdown links to other files, and Bible verse references such as `Exod 20:4` or `1 Cor 8:4-6`. A chapter file named like `Exod-20.md` or `Exodus 20.md` counts as linked from every note that mentions a verse in that chapter.
 - **Tools for Claude.** The connector is called **my-documents** in Claude, and every tool name says "document" so Claude doesn't confuse it with other apps' "collections":
@@ -120,6 +121,7 @@ The parameters after `ctx` become the tool's inputs. `ctx` has `search(query, li
 | `indexer.py` | Diff by path, size and mtime; parse, chunk, embed, store |
 | `links.py` | Finds links and Bible verse references in a file's text, and names Bible chapter files |
 | `search.py` | Scoped hybrid search with paging, `find_similar`, `read_file`, links and explore; always receives the active collections |
+| `similarity_map.py` | Map layout: k-means themes, theme placement, document positions and theme names |
 | `settings.py` | JSON settings, one lock, change notifications |
 | `engine.py` | Model, per-thread index connections, indexer thread, periodic rescan |
 | `watcher.py` | Folder watching with debounce |
@@ -127,4 +129,4 @@ The parameters after `ctx` become the tool's inputs. `ctx` has `search(query, li
 | `mcp_server.py` | MCP server on localhost, token check, tool gating |
 | `shim.py` | Stdio-to-localhost forwarder for Claude Desktop |
 | `claude_config.py` | Adds the shim to Claude Desktop's config |
-| `ui/` | PySide6 window, collection editor and tray |
+| `ui/` | PySide6 window, collection editor, Map tab and tray |

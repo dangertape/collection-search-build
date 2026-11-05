@@ -94,6 +94,8 @@ class Engine:
         self._status = Status()
         self._status_lock = threading.Lock()
         self._listeners: list[Callable[[Status], None]] = []
+        self._map = None  # last similarity map, reused while nothing has changed
+        self._map_lock = threading.Lock()
         settings.subscribe(self._on_settings)
 
     # ---- lifecycle ----------------------------------------------------------
@@ -196,6 +198,26 @@ class Engine:
             store, _ = self._for_query()
             limit = max(1, min(limit, self.settings.preferences.max_result_count))
             return search_core.find_similar(store, path, self._scope(collections), limit, passages)
+
+    def similarity_map(self, cancelled: Callable[[], bool] = lambda: False):
+        """Map of the documents in the ticked collections (see similarity_map.py).
+
+        The last map is kept and returned again until the index or the ticked collections change.
+        """
+        from .similarity_map import build_map
+
+        with self._guard():
+            store, _ = self._for_query()
+            active = self.settings.active_collections()
+            key = (repr(active), store.index_fingerprint())
+            with self._map_lock:
+                cached = self._map
+            if cached is not None and cached.key == key:
+                return cached
+            built = build_map(store, active, key, cancelled)
+            with self._map_lock:
+                self._map = built
+            return built
 
     def _search(self, query: str, limit: int, offset: int = 0,
                 collections: list[Collection] | None = None) -> tuple[list[search_core.Result], bool]:

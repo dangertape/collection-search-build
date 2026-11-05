@@ -24,6 +24,7 @@ from ..search import NotAllowed, NothingToCompare
 from ..settings import SCOPE, TOOLS, Settings
 from .collection_dialog import CollectionDialog
 from .icon import app_icon
+from .map_tab import MapTab
 
 ID_ROLE = Qt.UserRole
 TICKED, EVERYTHING = "", "*"  # collection picker choices besides single collections
@@ -62,6 +63,8 @@ class MainWindow(QMainWindow):
         self.similar_page = self._similar_tab()
         self.tabs.addTab(self.search_page, "Search")
         self.tabs.addTab(self.similar_page, "Similar")
+        self.map_tab = MapTab(engine, self.show_similar)
+        self.tabs.addTab(self.map_tab, "Map")
         self.tabs.addTab(self._collections_tab(), "Collections")
         self.tabs.addTab(self._tools_tab(), "Tools")
         self.tabs.addTab(self._status_tab(), "Status")
@@ -469,6 +472,8 @@ class MainWindow(QMainWindow):
         return tab
 
     def _show_status(self, status: Status) -> None:
+        if status.state == "idle":
+            self.map_tab.mark_stale()  # the index may have changed; the map redraws only if it did
         self.status_label.setText(status.message)
         if status.state == "indexing" and status.total:
             self.progress.setRange(0, status.total)
@@ -517,6 +522,7 @@ class MainWindow(QMainWindow):
             self.refresh_collections()
             for combo in self._pickers:
                 self._fill_picker(combo)
+            self.map_tab.mark_stale()
         elif kind == TOOLS:
             self.refresh_tools()
 

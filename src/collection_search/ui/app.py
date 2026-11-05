@@ -68,6 +68,7 @@ def main(args: list[str]) -> int:
         window.quitting = True
         window.status_label.setText("Stopping…")
         http.stop()
+        window.map_tab.shutdown()
         engine.stop()
         app.quit()
 
