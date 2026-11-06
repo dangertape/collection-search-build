@@ -194,3 +194,37 @@ def test_map_tab(window, tmp_path):
         pump(app, 0.1)
     assert len(tab.map) == 0
     w.map_tab.shutdown()
+
+
+def test_map_connections_and_passage_view(window, tmp_path):
+    w, tray, settings, engine, app = window
+    write(str(tmp_path / "docs" / "c.txt"), "hello")  # same words as a.txt
+    engine.request_sync()
+    _wait_files(engine, app, 2)
+    w.show()
+    w.tabs.setCurrentWidget(w.map_tab)
+    tab = w.map_tab
+    end = time.time() + 10
+    while len(tab.map) < 2 and time.time() < end:
+        pump(app, 0.1)
+    i = next(k for k, p in enumerate(tab.map.paths) if p.endswith("a.txt"))
+    tab.canvas.select_doc(i)
+    tab._doc_selected(i)
+    end = time.time() + 10
+    while tab.links_tree.topLevelItemCount() == 0 and time.time() < end:
+        pump(app, 0.1)
+    source = tab.links_tree.topLevelItem(0)
+    assert source.childCount() == 1 and "c.txt" in source.child(0).text(0)
+    assert tab.canvas.lines and tab.canvas.lines[0][0] == i
+    tab.links_tree.setCurrentItem(source.child(0))
+    assert tab.compare.isVisibleTo(tab) and "c.txt" in tab.compare.toPlainText()
+
+    tab.view.setCurrentIndex(1)  # Passages (detailed)
+    end = time.time() + 10
+    while not tab.map.passages and time.time() < end:
+        pump(app, 0.1)
+    assert tab.map.passages and len(tab.map) == 2 and tab.canvas.selected_doc is None
+    tab.canvas.select_doc(0)
+    tab._doc_selected(0)
+    assert tab.links_tree.topLevelItemCount() == 1 and tab.canvas.lines
+    tab.shutdown()

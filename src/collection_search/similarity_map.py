@@ -20,7 +20,7 @@ import math
 import os
 import re
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Iterable
 
 import numpy as np
@@ -34,6 +34,10 @@ NAME_SAMPLE = 25  # typical documents per theme read for naming it
 NAME_WORDS = 3
 COLORS = 8  # palette slots; neighbouring themes never share one
 SEED = 7  # fixed, so the same index draws the same map
+PASSAGE_LIMIT = 20_000  # passages drawn in passage mode; more are sampled evenly down to this
+NEIGHBOURS = 5  # closest passages in other files kept per passage
+STRONGEST = 400  # links drawn across the whole passage map when nothing is selected
+SAME_TEXT = 0.97  # passages at least this similar are near-copies (quotes, boilerplate)
 
 STOPWORDS = set("""
 about above after again against all also although among and another any are aren't around as at
@@ -68,13 +72,23 @@ class Theme:
 
 @dataclass
 class SimilarityMap:
+    """One dot per document, or (in passage mode) one per passage."""
+
     paths: list[str]
     collections: list[tuple[str, ...]]
     xy: np.ndarray  # (n, 2) positions
-    theme: np.ndarray  # (n,) theme index of each document
+    theme: np.ndarray  # (n,) theme index of each dot
     typicality: np.ndarray  # (n,) cosine similarity to its theme's centre
     themes: list[Theme]
     key: tuple = field(default=(), compare=False)
+    # Passage mode only:
+    passages: bool = False
+    locations: list[str] = field(default_factory=list)
+    texts: list[str] = field(default_factory=list)
+    total: int = 0  # passages in scope; more than len(self) when only a sample is drawn
+    neighbours: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), np.int32))  # (n, k), -1 = none
+    neighbour_sim: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), np.float32))
+    strongest: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), np.float32))  # rows (i, j, similarity)
 
     def __len__(self) -> int:
         return len(self.paths)
@@ -108,9 +122,56 @@ def build_map(store: Store, active: Iterable[Collection], key: tuple = (),
     ids, paths, vectors = store.doc_vectors(list(allowed))
     if not ids:
         return empty_map(key)
+
+    def texts(indices: list[int]) -> list[str]:
+        opening = store.opening_text([ids[i] for i in indices])
+        return [_stem(paths[i]) + " " + opening.get(ids[i], "") for i in indices]
+
+    return _build(vectors, paths, [allowed[i] for i in ids], texts, key, cancelled)
+
+
+def build_passage_map(store: Store, active: Iterable[Collection], key: tuple = (),
+                      cancelled: Callable[[], bool] = lambda: False, limit: int = PASSAGE_LIMIT) -> SimilarityMap:
+    """One dot per passage, with each passage's closest passages in other files.
+
+    Past `limit` passages an even sample is drawn, so the work stays bounded (comparing every
+    passage with every other grows with the square of the count).
+    """
+    allowed = allowed_files(store, active)
+    chunk_ids, file_ids = store.passage_ids(list(allowed))
+    total = len(chunk_ids)
+    if not total:
+        return replace(empty_map(key), passages=True)
+    if total > limit:
+        keep = np.unique(np.linspace(0, total - 1, limit).round().astype(np.int64))
+        chunk_ids, file_ids = chunk_ids[keep], file_ids[keep]
+    locations, headings, texts, vectors = store.passages(chunk_ids.tolist())
+    paths_by_id = {rec.id: rec.path for rec in store.files().values()}
+    paths = [paths_by_id[int(f)] for f in file_ids]
+    if cancelled():
+        raise Cancelled
+
+    def name_texts(indices: list[int]) -> list[str]:
+        return [f"{headings[i]} {texts[i]}" for i in indices]
+
+    m = _build(vectors, paths, [allowed[int(f)] for f in file_ids], name_texts, key, cancelled)
+    x = _unit(vectors.astype(np.float32))
+    neighbours, neighbour_sim = _neighbours(x, file_ids, NEIGHBOURS, cancelled)
+    return replace(m, passages=True, locations=locations,
+                   texts=[(h + "\n" if h else "") + t for h, t in zip(headings, texts)], total=total,
+                   neighbours=neighbours, neighbour_sim=neighbour_sim, strongest=_strongest(neighbours, neighbour_sim))
+
+
+def _stem(path: str) -> str:
+    return os.path.splitext(os.path.basename(path))[0]
+
+
+def _build(vectors: np.ndarray, paths: list[str], collections: list[tuple[str, ...]],
+           texts: Callable[[list[int]], list[str]], key: tuple, cancelled: Callable[[], bool]) -> SimilarityMap:
+    n = len(paths)
     x = _unit(vectors.astype(np.float32))
     rng = np.random.default_rng(SEED)
-    labels, centres = _kmeans(x, theme_count(len(ids)), rng, cancelled)
+    labels, centres = _kmeans(x, theme_count(n), rng, cancelled)
 
     # Biggest theme first; drop any that ended up empty.
     sizes = np.bincount(labels, minlength=len(centres))
@@ -123,21 +184,60 @@ def build_map(store: Store, active: Iterable[Collection], key: tuple = (),
         raise Cancelled
 
     centre_xy, radii = _layout_themes(centres, sizes)
-    xy = np.zeros((len(ids), 2), np.float32)
+    xy = np.zeros((n, 2), np.float32)
     for t in range(len(centres)):
         idx = np.flatnonzero(labels == t)
         xy[idx] = centre_xy[t] + _place_in_disc(x[idx] - centres[t], radii[t])
     if cancelled():
         raise Cancelled
 
-    names = _name_themes(store, ids, paths, labels, typicality, len(centres))
+    names = _name_themes(texts, paths, labels, typicality, len(centres))
     colors = _colors(centre_xy, radii)
     themes = [
         Theme(t, names[t][0], int(sizes[t]), float(centre_xy[t, 0]), float(centre_xy[t, 1]), float(radii[t]),
               colors[t], names[t][1])
         for t in range(len(centres))
     ]
-    return SimilarityMap(paths, [allowed[i] for i in ids], xy, labels.astype(np.int32), typicality, themes, key)
+    return SimilarityMap(paths, collections, xy, labels.astype(np.int32), typicality, themes, key)
+
+
+# ---- passage neighbours ----------------------------------------------------------
+def _neighbours(x: np.ndarray, file_ids: np.ndarray, k: int,
+                cancelled: Callable[[], bool]) -> tuple[np.ndarray, np.ndarray]:
+    """Each passage's k most similar passages in other files (exact, in blocks)."""
+    n = len(x)
+    k = min(k, max(n - 1, 0))
+    nbr = np.full((n, k), -1, np.int32)
+    sim = np.zeros((n, k), np.float32)
+    if k == 0:
+        return nbr, sim
+    for start in range(0, n, 1024):
+        if cancelled():
+            raise Cancelled
+        block = x[start:start + 1024] @ x.T
+        block[file_ids[start:start + 1024, None] == file_ids[None, :]] = -2.0  # same file never counts
+        top = np.argpartition(-block, k - 1, axis=1)[:, :k] if k < n else np.tile(np.arange(n), (len(block), 1))
+        vals = np.take_along_axis(block, top, axis=1)
+        order = np.argsort(-vals, axis=1, kind="stable")
+        top, vals = np.take_along_axis(top, order, axis=1), np.take_along_axis(vals, order, axis=1)
+        top[vals <= -1.5] = -1
+        nbr[start:start + len(block)] = top
+        sim[start:start + len(block)] = np.where(vals <= -1.5, 0, vals)
+    return nbr, sim
+
+
+def _strongest(nbr: np.ndarray, sim: np.ndarray, count: int = STRONGEST) -> np.ndarray:
+    """The strongest links between passages of different files, each pair once, near-copies left out."""
+    if nbr.size == 0:
+        return np.zeros((0, 3), np.float32)
+    rows = np.repeat(np.arange(len(nbr)), nbr.shape[1])
+    cols, vals = nbr.ravel(), sim.ravel()
+    ok = (cols >= 0) & (vals < SAME_TEXT)
+    a, b = np.minimum(rows[ok], cols[ok]), np.maximum(rows[ok], cols[ok])
+    pairs, first = np.unique(np.stack([a, b], axis=1), axis=0, return_index=True)
+    vals = vals[ok][first]
+    top = np.argsort(-vals, kind="stable")[:count]
+    return np.column_stack([pairs[top], vals[top]]).astype(np.float32)
 
 
 # ---- grouping -----------------------------------------------------------------
@@ -307,21 +407,22 @@ def _words(text: str) -> set[str]:
     return {w for w in _WORD.findall(text.lower()) if w not in STOPWORDS and len(w) <= 24}
 
 
-def _name_themes(store: Store, ids: list[int], paths: list[str], labels: np.ndarray,
+def _name_themes(texts: Callable[[list[int]], list[str]], paths: list[str], labels: np.ndarray,
                  typicality: np.ndarray, k: int) -> list[tuple[str, str]]:
     """(label, main folder) per theme."""
     samples: list[np.ndarray] = []
     for t in range(k):
         idx = np.flatnonzero(labels == t)
         samples.append(idx[np.argsort(-typicality[idx], kind="stable")[:NAME_SAMPLE]])
-    texts = store.opening_text([ids[i] for s in samples for i in s])
+    sample_texts = texts([int(i) for s in samples for i in s])
     doc_words: list[list[set[str]]] = []
     overall: Counter = Counter()
+    pos = 0
     for sample in samples:
         sets = []
-        for i in sample:
-            stem = os.path.splitext(os.path.basename(paths[i]))[0]
-            words = _words(stem + " " + texts.get(ids[i], ""))
+        for _ in sample:
+            words = _words(sample_texts[pos])
+            pos += 1
             sets.append(words)
             overall.update(words)
         doc_words.append(sets)
