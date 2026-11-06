@@ -389,6 +389,54 @@ class Store:
                 out.setdefault(fid, []).append(f"{heading}\n{text}")
         return {fid: "\n".join(parts) for fid, parts in out.items()}
 
+    def passage_ids(self, file_ids: Iterable[int]) -> tuple[np.ndarray, np.ndarray]:
+        """Chunk ids and their file ids for the given files, in file order. No vectors are read."""
+        self._with_allowed(file_ids)
+        rows = self.db.execute(
+            "SELECT c.id, c.file_id FROM chunks c JOIN temp.allowed a ON a.id = c.file_id "
+            "JOIN vectors v ON v.chunk_id = c.id ORDER BY c.file_id, c.ord"
+        ).fetchall()
+        arr = np.array(rows, dtype=np.int64).reshape(-1, 2)
+        return arr[:, 0], arr[:, 1]
+
+    def passages(self, chunk_ids: Sequence[int]) -> tuple[list[str], list[str], list[str], np.ndarray]:
+        """Locations, headings, texts and an (n, dim) vector matrix of the given chunks, in the order given."""
+        ids = [int(i) for i in chunk_ids]
+        found: dict[int, tuple] = {}
+        for start in range(0, len(ids), 500):
+            part = ids[start:start + 500]
+            marks = ",".join("?" * len(part))
+            for row in self.db.execute(
+                f"SELECT c.id, c.location, c.heading, c.text, v.embedding FROM chunks c "
+                f"JOIN vectors v ON v.chunk_id = c.id WHERE c.id IN ({marks})", part,
+            ):
+                found[row[0]] = row[1:]
+        rows = [found[i] for i in ids if i in found]
+        dim = getattr(self, "dim", 0)
+        if not rows:
+            return [], [], [], np.zeros((0, dim), dtype=np.float32)
+        matrix = np.frombuffer(b"".join(r[3] for r in rows), dtype=np.float32).reshape(len(rows), -1)
+        return [r[0] for r in rows], [r[1] for r in rows], [r[2] for r in rows], matrix
+
+    def chunks_of(self, file_ids: Sequence[int]) -> tuple[np.ndarray, list[str], list[str], list[str], np.ndarray]:
+        """File id per chunk, locations, headings, texts and vectors of every chunk of the given files."""
+        ids = [int(i) for i in file_ids]
+        rows: list[tuple] = []
+        for start in range(0, len(ids), 200):
+            part = ids[start:start + 200]
+            marks = ",".join("?" * len(part))
+            rows += self.db.execute(
+                f"SELECT c.file_id, c.location, c.heading, c.text, v.embedding FROM chunks c "
+                f"JOIN vectors v ON v.chunk_id = c.id WHERE c.file_id IN ({marks}) ORDER BY c.file_id, c.ord",
+                part,
+            ).fetchall()
+        dim = getattr(self, "dim", 0)
+        if not rows:
+            return np.zeros(0, np.int64), [], [], [], np.zeros((0, dim), dtype=np.float32)
+        matrix = np.frombuffer(b"".join(r[4] for r in rows), dtype=np.float32).reshape(len(rows), -1)
+        return (np.array([r[0] for r in rows], np.int64), [r[1] for r in rows], [r[2] for r in rows],
+                [r[3] for r in rows], matrix)
+
     def index_fingerprint(self) -> tuple:
         """Changes whenever a file is indexed, re-indexed or removed."""
         return self.db.execute("SELECT COUNT(*), MAX(indexed_at), SUM(id) FROM files").fetchone()

@@ -94,7 +94,7 @@ class Engine:
         self._status = Status()
         self._status_lock = threading.Lock()
         self._listeners: list[Callable[[Status], None]] = []
-        self._map = None  # last similarity map, reused while nothing has changed
+        self._maps: dict = {}  # last similarity map of each kind, reused while nothing has changed
         self._map_lock = threading.Lock()
         settings.subscribe(self._on_settings)
 
@@ -199,25 +199,35 @@ class Engine:
             limit = max(1, min(limit, self.settings.preferences.max_result_count))
             return search_core.find_similar(store, path, self._scope(collections), limit, passages)
 
-    def similarity_map(self, cancelled: Callable[[], bool] = lambda: False):
-        """Map of the documents in the ticked collections (see similarity_map.py).
+    def similarity_map(self, cancelled: Callable[[], bool] = lambda: False, passages: bool = False):
+        """Map of the documents (or, with `passages`, the passages) in the ticked collections.
 
-        The last map is kept and returned again until the index or the ticked collections change.
+        The last map of each kind is kept and returned again until the index or the ticked
+        collections change. See similarity_map.py.
         """
-        from .similarity_map import build_map
+        from .similarity_map import build_map, build_passage_map
 
         with self._guard():
             store, _ = self._for_query()
             active = self.settings.active_collections()
-            key = (repr(active), store.index_fingerprint())
+            key = (repr(active), store.index_fingerprint(), passages)
             with self._map_lock:
-                cached = self._map
+                cached = self._maps.get(passages)
             if cached is not None and cached.key == key:
                 return cached
-            built = build_map(store, active, key, cancelled)
+            build = build_passage_map if passages else build_map
+            built = build(store, active, key, cancelled)
             with self._map_lock:
-                self._map = built
+                self._maps[passages] = built
             return built
+
+    def passage_links(self, path: str, per_passage: int = 3):
+        """For each passage of one document, the closest passages in other documents of the ticked collections."""
+        from .passages import passage_links
+
+        with self._guard():
+            store, _ = self._for_query()
+            return passage_links(store, path, self.settings.active_collections(), per_passage)
 
     def _search(self, query: str, limit: int, offset: int = 0,
                 collections: list[Collection] | None = None) -> tuple[list[search_core.Result], bool]:
