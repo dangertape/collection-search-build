@@ -12,7 +12,7 @@ import os
 import sys
 import time
 
-from PySide6.QtCore import QLockFile
+from PySide6.QtCore import QLockFile, QTimer
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
@@ -21,6 +21,7 @@ from ..addons import load_tools
 from ..engine import Engine, default_embedder_factory
 from ..mcp_server import HttpServer, build_server
 from ..settings import Settings
+from .foreground import allow_other_process_to_take_focus, bring_to_front
 from .icon import app_icon
 from .main_window import MainWindow
 from .tray import Tray
@@ -56,9 +57,7 @@ def main(args: list[str]) -> int:
     stopped = False
 
     def show_window():
-        window.show()
-        window.raise_()
-        window.activateWindow()
+        bring_to_front(window)
 
     def quit_app():
         nonlocal stopped
@@ -92,6 +91,7 @@ def main(args: list[str]) -> int:
     in_tray = "--tray" in args or _started_by_connector()
     if not in_tray or tray is None:
         show_window()
+        QTimer.singleShot(0, show_window)  # again once the event loop runs, in case Windows kept it behind
     code = app.exec()
     lock.unlock()
     return code
@@ -111,6 +111,7 @@ def _started_by_connector() -> bool:
 
 
 def _ask_running_instance_to_show() -> None:
+    allow_other_process_to_take_focus()  # we were just launched, so we may hand the front to the running app
     socket = QLocalSocket()
     socket.connectToServer(INSTANCE_KEY)
     if not socket.waitForConnected(1000):

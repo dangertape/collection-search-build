@@ -228,3 +228,20 @@ def test_map_connections_and_passage_view(window, tmp_path):
     tab._doc_selected(0)
     assert tab.links_tree.topLevelItemCount() == 1 and tab.canvas.lines
     tab.shutdown()
+
+
+def test_bring_to_front_restores_and_moves_on_screen(qapp):
+    from PySide6.QtGui import QGuiApplication
+
+    from collection_search.ui.foreground import bring_to_front
+
+    w = QtWidgets.QWidget()
+    w.resize(300, 200)
+    w.showMinimized()
+    w.move(-20000, -20000)
+    bring_to_front(w)
+    qapp.processEvents()
+    assert w.isVisible() and not w.isMinimized()
+    area = QGuiApplication.primaryScreen().availableGeometry()
+    assert area.intersects(w.frameGeometry())
+    w.close()
