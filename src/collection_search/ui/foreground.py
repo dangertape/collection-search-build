@@ -6,6 +6,10 @@ anywhere in the meantime, a plain show() and activateWindow() leave the window
 behind everything else, with only a taskbar button to show it opened. The same
 happens when a second launch asks the running app to show itself. So on
 Windows we also ask the system directly to put the window on top.
+
+Windows also applies a launcher's "start minimized" request to the first
+window a program shows, before it is ever drawn. That leaves a taskbar button
+with a blank white preview and no window, so a minimized window is restored.
 """
 
 from __future__ import annotations
@@ -32,6 +36,20 @@ def bring_to_front(window: QWidget) -> None:
             _force_foreground_win32(int(window.winId()))
         except Exception:  # never let this stop the window opening
             log.exception("Could not bring the window to the front")
+
+
+def is_minimized(window: QWidget) -> bool:
+    """Minimized as Windows sees it too: a launch can ask Windows to start the app minimized."""
+    if window.isMinimized():
+        return True
+    if sys.platform == "win32" and window.isVisible():
+        try:
+            import ctypes
+
+            return bool(ctypes.windll.user32.IsIconic(ctypes.c_void_p(int(window.winId()))))
+        except Exception:
+            return False
+    return False
 
 
 def keep_on_screen(window: QWidget) -> None:

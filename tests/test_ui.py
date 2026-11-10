@@ -245,3 +245,16 @@ def test_bring_to_front_restores_and_moves_on_screen(qapp):
     area = QGuiApplication.primaryScreen().availableGeometry()
     assert area.intersects(w.frameGeometry())
     w.close()
+
+
+def test_is_minimized(qapp):
+    from collection_search.ui.foreground import bring_to_front, is_minimized
+
+    w = QtWidgets.QWidget()
+    w.showMinimized()
+    qapp.processEvents()
+    assert is_minimized(w)
+    bring_to_front(w)
+    qapp.processEvents()
+    assert not is_minimized(w)
+    w.close()

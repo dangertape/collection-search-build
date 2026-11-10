@@ -21,7 +21,7 @@ from ..addons import load_tools
 from ..engine import Engine, default_embedder_factory
 from ..mcp_server import HttpServer, build_server
 from ..settings import Settings
-from .foreground import allow_other_process_to_take_focus, bring_to_front
+from .foreground import allow_other_process_to_take_focus, bring_to_front, is_minimized
 from .icon import app_icon
 from .main_window import MainWindow
 from .tray import Tray
@@ -91,7 +91,10 @@ def main(args: list[str]) -> int:
     in_tray = "--tray" in args or _started_by_connector()
     if not in_tray or tray is None:
         show_window()
-        QTimer.singleShot(0, show_window)  # again once the event loop runs, in case Windows kept it behind
+        # Again once the event loop runs, in case Windows kept it behind or started it minimized
+        # (a launcher's "start minimized" setting applies to the first window, which is then never drawn).
+        QTimer.singleShot(0, show_window)
+        QTimer.singleShot(1000, lambda: is_minimized(window) and show_window())
     code = app.exec()
     lock.unlock()
     return code
