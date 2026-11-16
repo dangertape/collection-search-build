@@ -63,3 +63,19 @@ def test_unknown_preferences_ignored(tmp_path):
     path = tmp_path / "settings.json"
     path.write_text(json.dumps({"preferences": {"chunk_size": 1000, "from_the_future": 1}}))
     assert Settings.load(str(path)).preferences == Preferences(chunk_size=1000)
+
+
+def test_new_file_types_start_on_in_saved_collections(tmp_path):
+    path = tmp_path / "settings.json"
+    old = {"name": "Books", "folders": ["/books"]}
+    path.write_text(json.dumps({"version": 2, "collections": [
+        dict(old, id="a", extensions=[".pdf", ".docx", ".txt", ".md", ".markdown"]),  # saved before EPUB
+        dict(old, id="b", name="Papers", extensions=[".pdf"]),
+    ]}))
+    s = Settings.load(str(path))
+    books, papers = s.collections()
+    assert ".epub" in books.extensions and ".epub" in papers.extensions
+    s.upsert_collection(Collection("Papers", ["/books"], extensions=[".pdf"], id="b"))  # user unticks EPUB
+    again = {c.id: c for c in Settings.load(str(path)).collections()}
+    assert ".epub" in again["a"].extensions
+    assert again["b"].extensions == [".pdf"]

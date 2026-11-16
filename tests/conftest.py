@@ -71,3 +71,55 @@ def store(tmp_path, embedder):
     s = Store(str(tmp_path / "index.db"), embedder.name, embedder.dim)
     yield s
     s.close()
+
+
+def make_epub(path: str, chapters: list[tuple[str, str | None, str]], toc: str = "nav",
+              encrypted: list[str] = ()) -> None:
+    """Write a small EPUB. chapters: (file name, table-of-contents title or None, body XHTML).
+
+    toc is "nav" (EPUB 3), "ncx" (EPUB 2) or "none". Files are stored under OEBPS/.
+    """
+    import zipfile
+
+    def page(body: str) -> str:
+        return ('<?xml version="1.0" encoding="utf-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml" '
+                'xmlns:epub="http://www.idpf.org/2007/ops"><head><title>x</title>'
+                f'<style>p {{ margin: 0 }}</style></head><body>{body}</body></html>')
+
+    listed = [(name, title) for name, title, _ in chapters if title]
+    items = "".join(f'<item id="c{i}" href="{name}" media-type="application/xhtml+xml"/>'
+                    for i, (name, _, _) in enumerate(chapters))
+    spine = "".join(f'<itemref idref="c{i}"/>' for i in range(len(chapters)))
+    files = {name: page(body) for name, _, body in chapters}
+    spine_attr = ""
+    if toc == "nav":
+        links = "".join(f'<li><a href="{n}#start">{t}</a></li>' for n, t in listed)
+        files["nav.xhtml"] = page(f'<nav epub:type="landmarks"><ol><li><a href="{chapters[0][0]}">Start</a></li></ol></nav>'
+                                  f'<nav epub:type="toc"><h1>Contents</h1><ol>{links}</ol></nav>')
+        items += '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
+        spine = '<itemref idref="nav"/>' + spine
+    elif toc == "ncx":
+        points = "".join(f'<navPoint id="p{i}"><navLabel><text>{t}</text></navLabel><content src="{n}"/></navPoint>'
+                         for i, (n, t) in enumerate(listed))
+        files["toc.ncx"] = ('<?xml version="1.0"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">'
+                            f'<navMap>{points}</navMap></ncx>')
+        items += '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>'
+        spine_attr = ' toc="ncx"'
+    opf = ('<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0">'
+           f'<metadata/><manifest>{items}</manifest><spine{spine_attr}>{spine}</spine></package>')
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("mimetype", "application/epub+zip")
+        z.writestr("META-INF/container.xml",
+                   '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+                   '<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>'
+                   '</rootfiles></container>')
+        if encrypted:
+            data = "".join('<enc:EncryptedData xmlns:enc="http://www.w3.org/2001/04/xmlenc#">'
+                           '<enc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes128-cbc"/>'
+                           f'<enc:CipherData><enc:CipherReference URI="OEBPS/{n}"/></enc:CipherData></enc:EncryptedData>'
+                           for n in encrypted)
+            z.writestr("META-INF/encryption.xml",
+                       f'<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container">{data}</encryption>')
+        z.writestr("OEBPS/content.opf", opf)
+        for name, text in files.items():
+            z.writestr(f"OEBPS/{name}", text)
