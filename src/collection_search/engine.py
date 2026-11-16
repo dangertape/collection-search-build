@@ -229,6 +229,13 @@ class Engine:
             store, _ = self._for_query()
             return passage_links(store, path, self.settings.active_collections(), per_passage)
 
+    def indexed_files(self) -> tuple[tuple, dict[str, str]]:
+        """The index's fingerprint and {normalised path: path} of every indexed file,
+        for the tree on the Collections tab. Raises NotReady until the index is open."""
+        with self._guard():
+            store, _ = self._for_query()
+            return store.index_fingerprint(), {key: rec.path for key, rec in store.files().items()}
+
     def _search(self, query: str, limit: int, offset: int = 0,
                 collections: list[Collection] | None = None) -> tuple[list[search_core.Result], bool]:
         store, embedder = self._for_query()

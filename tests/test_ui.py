@@ -1,5 +1,6 @@
 """Smoke tests for the window and tray, run without a screen."""
 
+import gc
 import os
 import time
 
@@ -39,6 +40,14 @@ def window(qapp, tmp_path):
     engine.start()
     yield w, tray, settings, engine, qapp
     engine.stop()
+    # Free this test's widgets here, on the UI thread. Left to the garbage collector,
+    # they could be freed on the next test's indexer thread, which crashes Qt.
+    w.map_tab.shutdown()
+    tray.hide()
+    w.deleteLater()
+    del w, tray
+    gc.collect()
+    qapp.processEvents()
 
 
 def pump(app, seconds=0.5):
@@ -50,7 +59,8 @@ def pump(app, seconds=0.5):
 
 def test_checkboxes_drive_settings(window):
     w, tray, settings, engine, app = window
-    w.collection_list.item(0).setCheckState(Qt.Unchecked)
+    w.collection_tree.topLevelItem(0).setCheckState(0, Qt.Unchecked)
+    pump(app, 0.1)
     assert settings.active_collections() == []
     w.tool_list.item(0).setCheckState(Qt.Unchecked)
     assert not settings.tool_enabled(w.tool_list.item(0).data(Qt.UserRole))
@@ -62,7 +72,7 @@ def test_tray_and_window_stay_in_step(window):
     docs_action.setChecked(False)
     pump(app, 0.2)
     assert settings.active_collections() == []
-    assert w.collection_list.item(0).checkState() == Qt.Unchecked
+    assert w.collection_tree.topLevelItem(0).checkState(0) == Qt.Unchecked
 
 
 def test_status_shows_index_counts(window):
@@ -188,7 +198,7 @@ def test_map_tab(window, tmp_path):
     assert w.similar_results.topLevelItemCount() == 1
     # unticking the collection empties the map
     w.tabs.setCurrentWidget(w.map_tab)
-    w.collection_list.item(0).setCheckState(Qt.Unchecked)
+    w.collection_tree.topLevelItem(0).setCheckState(0, Qt.Unchecked)
     end = time.time() + 10
     while len(tab.map) and time.time() < end:
         pump(app, 0.1)
@@ -258,3 +268,63 @@ def test_is_minimized(qapp):
     qapp.processEvents()
     assert not is_minimized(w)
     w.close()
+
+
+def _collection_rows(w, app):
+    end = time.time() + 10
+    while time.time() < end:
+        pump(app, 0.1)
+        top = w.collection_tree.topLevelItem(0)
+        top.setExpanded(True)
+        if top.childCount() and top.child(0).childCount() == 0:
+            top.child(0).setExpanded(True)
+        if top.childCount() and top.child(0).childCount():
+            return top
+    raise AssertionError("tree never filled")
+
+
+def test_collection_tree_switches_folders_and_documents(window, tmp_path):
+    w, tray, settings, engine, app = window
+    write(str(tmp_path / "docs" / "Sub" / "b.txt"), "hello b")
+    write(str(tmp_path / "docs" / "Sub" / "c.txt"), "hello c")
+    engine.request_sync()
+    _wait_files(engine, app, 3)
+    pump(app, 0.3)
+    top = _collection_rows(w, app)
+    root = top.child(0)
+    assert root.text(1) == "3"
+    sub = next(root.child(i) for i in range(root.childCount()) if root.child(i).text(0) == "Sub")
+    sub.setExpanded(True)
+    b = next(sub.child(i) for i in range(sub.childCount()) if sub.child(i).text(0) == "b.txt")
+
+    b.setCheckState(0, Qt.Unchecked)  # switch one document off
+    pump(app, 0.2)
+    [c] = settings.collections()
+    assert c.switches == {str(tmp_path / "docs" / "Sub" / "b.txt"): False}
+    tree = w.collection_tree
+    assert tree.collection_item(c.id).checkState(0) == Qt.PartiallyChecked
+    assert tree.find_row(str(tmp_path / "docs" / "Sub")).checkState(0) == Qt.PartiallyChecked
+    assert tree.find_row(str(tmp_path / "docs" / "Sub")).text(1) == "1 of 2"
+    assert tree.find_row(str(tmp_path / "docs" / "Sub" / "b.txt")).checkState(0) == Qt.Unchecked
+    assert tree.find_row(str(tmp_path / "docs" / "a.txt")).checkState(0) == Qt.Checked
+    assert settings.active_collections()  # the collection itself stays on
+
+    results = engine.search("hello", 10)
+    assert {os.path.basename(r.path) for r in results} == {"a.txt", "c.txt"}
+
+    # clicking the half-filled folder turns everything in it back on
+    tree.find_row(str(tmp_path / "docs" / "Sub")).setCheckState(0, Qt.Checked)
+    pump(app, 0.2)
+    assert settings.collections()[0].switches == {}
+    assert tree.collection_item(c.id).checkState(0) == Qt.Checked
+
+    # a collection switched off keeps its saved folder switches
+    tree.find_row(str(tmp_path / "docs" / "Sub")).setCheckState(0, Qt.Unchecked)
+    pump(app, 0.2)
+    tree.collection_item(c.id).setCheckState(0, Qt.Unchecked)
+    pump(app, 0.2)
+    assert settings.active_collections() == []
+    assert settings.collections()[0].switches == {str(tmp_path / "docs" / "Sub"): False}
+    tree.collection_item(c.id).setCheckState(0, Qt.Checked)
+    pump(app, 0.2)
+    assert tree.collection_item(c.id).checkState(0) == Qt.PartiallyChecked

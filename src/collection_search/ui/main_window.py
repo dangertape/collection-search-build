@@ -11,7 +11,7 @@ import time
 from PySide6.QtCore import QObject, QPoint, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QApplication, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
     QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
@@ -23,6 +23,7 @@ from ..engine import Engine, NotReady, Status
 from ..search import NotAllowed, NothingToCompare
 from ..settings import SCOPE, TOOLS, Settings
 from .collection_dialog import CollectionDialog
+from .collection_tree import CollectionTree
 from .icon import app_icon
 from .map_tab import MapTab
 
@@ -58,6 +59,7 @@ class MainWindow(QMainWindow):
         self._pickers: list[QComboBox] = []
         self._search_offset = 0
         self._search_scope: list[Collection] | None = None
+        self._files_fingerprint = None
         self.tabs = QTabWidget()
         self.search_page = self._search_tab()
         self.similar_page = self._similar_tab()
@@ -71,15 +73,18 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.tabs)
 
         self.refresh_collections()
+        self.refresh_collection_files()
         self.refresh_tools()
         self._show_status(engine.status())
 
     # ---- Collections ----------------------------------------------------------------
     def _collections_tab(self) -> QWidget:
-        self.collection_list = QListWidget()
-        self.collection_list.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.collection_list.itemChanged.connect(self._collection_toggled)
-        self.collection_list.itemDoubleClicked.connect(lambda _: self.edit_collection())
+        self.collection_tree = CollectionTree()
+        self.collection_tree.collection_toggled.connect(self.settings.set_collection_active)
+        self.collection_tree.switch_toggled.connect(self.settings.set_switch)
+        self.collection_tree.edit_requested.connect(self._edit_collection_id)
+        self.collection_tree.open_requested.connect(_open_path)
+        self.collection_tree.show_in_folder.connect(_show_in_folder)
         add, edit, delete = QPushButton("Add…"), QPushButton("Edit…"), QPushButton("Delete")
         add.clicked.connect(self.add_collection)
         edit.clicked.connect(self.edit_collection)
@@ -88,35 +93,35 @@ class MainWindow(QMainWindow):
         for b in (add, edit, delete):
             buttons.addWidget(b)
         buttons.addStretch()
-        hint = QLabel("Claude can only search collections that are ticked. Changes apply on Claude's next call.")
+        hint = QLabel("Claude can only search collections that are ticked. Open a collection to switch "
+                      "folders and documents in it on or off; a half-filled box means some of what is inside "
+                      "is off. Changes are saved and apply on Claude's next call, with no re-indexing.")
         hint.setWordWrap(True)
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.addWidget(hint)
-        layout.addWidget(self.collection_list)
+        layout.addWidget(self.collection_tree)
         layout.addLayout(buttons)
         return tab
 
     def refresh_collections(self) -> None:
-        selected = self._selected_collection_id()
-        self.collection_list.blockSignals(True)
-        self.collection_list.clear()
-        for c in self.settings.collections():
-            item = QListWidgetItem(f"{c.name}    —    {', '.join(c.folders)}")
-            item.setData(ID_ROLE, c.id)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked if c.active else Qt.Unchecked)
-            self.collection_list.addItem(item)
-            if c.id == selected:
-                item.setSelected(True)
-        self.collection_list.blockSignals(False)
+        self.collection_tree.set_collections(self.settings.collections())
+
+    def refresh_collection_files(self) -> None:
+        """Reload the tree's list of indexed files, if the index has changed."""
+        try:
+            fingerprint, files = self.engine.indexed_files()
+        except NotReady:
+            if self._files_fingerprint is not None:
+                return  # keep showing the last list while the index is rebuilt
+            fingerprint, files = None, None
+        if fingerprint is not None and fingerprint == self._files_fingerprint:
+            return
+        self._files_fingerprint = fingerprint
+        self.collection_tree.set_files(files)
 
     def _selected_collection_id(self) -> str | None:
-        items = self.collection_list.selectedItems() if hasattr(self, "collection_list") else []
-        return items[0].data(ID_ROLE) if items else None
-
-    def _collection_toggled(self, item: QListWidgetItem) -> None:
-        self.settings.set_collection_active(item.data(ID_ROLE), item.checkState() == Qt.Checked)
+        return self.collection_tree.selected_collection_id() if hasattr(self, "collection_tree") else None
 
     def add_collection(self) -> None:
         names = {c.name for c in self.settings.collections()}
@@ -125,7 +130,9 @@ class MainWindow(QMainWindow):
             self.settings.upsert_collection(result)
 
     def edit_collection(self) -> None:
-        cid = self._selected_collection_id()
+        self._edit_collection_id(self._selected_collection_id())
+
+    def _edit_collection_id(self, cid: str | None) -> None:
         collection = self.settings.get_collection(cid) if cid else None
         if not collection:
             return
@@ -474,6 +481,7 @@ class MainWindow(QMainWindow):
     def _show_status(self, status: Status) -> None:
         if status.state == "idle":
             self.map_tab.mark_stale()  # the index may have changed; the map redraws only if it did
+            self.refresh_collection_files()
         self.status_label.setText(status.message)
         if status.state == "indexing" and status.total:
             self.progress.setRange(0, status.total)
