@@ -19,6 +19,7 @@ from typing import Callable
 from .chunking import DEFAULT_OVERLAP, DEFAULT_SIZE
 from .collections import Collection
 from .embeddings import DEFAULT_MODEL
+from .parsers import SUPPORTED_EXTENSIONS
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +40,8 @@ RENAMED_TOOLS = {
     "list_collections": "list_document_collections",
 }
 OLD_RESULT_COUNTS = (8, 25)  # version 1 defaults, raised to the new ones
+# The file types the app read before "known_extensions" was saved with each collection.
+OLD_EXTENSIONS = (".docx", ".markdown", ".md", ".pdf", ".txt")
 
 
 @dataclass
@@ -211,6 +214,7 @@ def _collection_to_dict(c: Collection) -> dict:
         "folders": list(c.folders),
         "excluded": list(c.excluded),
         "extensions": list(c.extensions),
+        "known_extensions": sorted(SUPPORTED_EXTENSIONS),
         "modified_after": c.modified_after.isoformat() if c.modified_after else None,
         "modified_before": c.modified_before.isoformat() if c.modified_before else None,
         "include_patterns": list(c.include_patterns),
@@ -233,7 +237,11 @@ def _collection_from_dict(d: dict) -> Collection:
         active=bool(d.get("active", True)),
     )
     if d.get("extensions"):
-        kwargs["extensions"] = list(d["extensions"])
+        # A file type added since the collection was saved starts switched on,
+        # like it would in a new collection. Types the user unticked stay off.
+        known = {e.lower() for e in d.get("known_extensions", OLD_EXTENSIONS)}
+        added = sorted(SUPPORTED_EXTENSIONS - known)
+        kwargs["extensions"] = list(d["extensions"]) + added
     if d.get("id"):
         kwargs["id"] = d["id"]
     return Collection(**kwargs)
