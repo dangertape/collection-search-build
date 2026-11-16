@@ -152,7 +152,7 @@ class CollectionDialog(QDialog):
             exclude_patterns=_patterns(self.exclude.text()),
         )
         if base:
-            return Collection(**values, active=base.active, id=base.id)
+            return Collection(**values, active=base.active, switches=dict(base.switches), id=base.id)
         return Collection(**values)
 
     def _accept(self) -> None:

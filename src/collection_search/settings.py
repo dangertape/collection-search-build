@@ -177,6 +177,22 @@ class Settings:
                 return
         self._changed(SCOPE)
 
+    def set_switch(self, collection_id: str, path: str, on: bool) -> None:
+        """Turn a folder or document inside a collection on or off, with everything inside it.
+
+        Off items stay in the index, so turning them back on is instant.
+        """
+        with self._lock:
+            c = next((c for c in self._collections if c.id == collection_id), None)
+            if c is None:
+                return
+            switches = c.with_switch(path, on)
+            if switches == c.switches:
+                return
+            c.switches = switches
+            c.__post_init__()
+        self._changed(SCOPE)
+
     # ---- tools ----------------------------------------------------------------
     def tool_enabled(self, name: str) -> bool:
         """Tools are on unless switched off, so a newly added tool works at once."""
@@ -219,6 +235,7 @@ def _collection_to_dict(c: Collection) -> dict:
         "modified_before": c.modified_before.isoformat() if c.modified_before else None,
         "include_patterns": list(c.include_patterns),
         "exclude_patterns": list(c.exclude_patterns),
+        "switches": dict(c.switches),
     }
 
 
@@ -235,6 +252,7 @@ def _collection_from_dict(d: dict) -> Collection:
         include_patterns=list(d.get("include_patterns", [])),
         exclude_patterns=list(d.get("exclude_patterns", [])),
         active=bool(d.get("active", True)),
+        switches={str(p): bool(on) for p, on in (d.get("switches") or {}).items()},
     )
     if d.get("extensions"):
         # A file type added since the collection was saved starts switched on,
