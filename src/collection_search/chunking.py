@@ -19,7 +19,7 @@ DEFAULT_OVERLAP = 150
 class Chunk:
     text: str
     location: str
-    heading: str = ""  # headings above the chunk's text, e.g. "Exodus 20 > 1-4"
+    heading: str = ""  # headings above the chunk's text, e.g. "Chapter 3 > Methods"
 
 
 @dataclass

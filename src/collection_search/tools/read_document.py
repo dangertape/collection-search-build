@@ -7,7 +7,7 @@ TITLE = "Read a document"
 DESCRIPTION = """
 Read one of the user's documents, given its path from a search result. To see
 a passage in context, pass "around" with the result's location (like
-"paragraphs 12-15") or heading (like "Exodus 20 > 4"): you get that part plus
+"paragraphs 12-15") or heading (like "Chapter 3 > Methods"): you get that part plus
 a few sections either side, which is quicker than the whole file. Leave
 "around" out to read the whole file. Each section starts with its location and
 headings in square brackets. Very long files are cut off and marked as

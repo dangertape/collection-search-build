@@ -6,12 +6,9 @@ NAME = "get_document_links"
 TITLE = "Show a document's links"
 DESCRIPTION = """
 Show how one of the user's documents connects to others: the notes it links
-to ([[wikilinks]], Markdown links and links in web pages), the notes that link back to it
-(backlinks), and the Bible verse references it mentions, such as
-"Exodus 20:4". A Bible chapter file (like "Exod-20.md") counts as linked from
-every note that mentions a verse in that chapter, so its backlinks show where
-the chapter is discussed. Pass "collection" to list only linked documents in
-that collection. Use this after finding a relevant note, before
+to ([[wikilinks]], Markdown links and links in web pages) and the notes that
+link back to it (backlinks). Pass "collection" to list only linked documents
+in that collection. Use this after finding a relevant note, before
 answering, to see what else the user connected to it. Then read_document with
 "around" set to an example's location shows the linking passage.
 """

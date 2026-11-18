@@ -13,13 +13,13 @@ or generated media.
 
 Each result is a short passage with its file path, collection, location and,
 for Markdown and Word files, the headings above it (for example
-"Exodus 20 > 4-6"), so you can often cite it without opening the file.
+"Chapter 3 > Methods"), so you can often cite it without opening the file.
 
 For a thorough answer, don't stop at one search: search again with other
 wording, synonyms and specific names or references; use a limit of 20 or more
 for research questions; and ask for the next page with offset when the
 results are still relevant. To search only one collection (when the user
-names one, like "search my sermon notes"), pass its name as "collection";
+names one, like "search my work notes"), pass its name as "collection";
 list_document_collections shows the names. Then use get_document_links or
 explore_documents to follow connections, and read_document with "around" to see a passage in
 context.
