@@ -328,3 +328,49 @@ def test_collection_tree_switches_folders_and_documents(window, tmp_path):
     tree.collection_item(c.id).setCheckState(0, Qt.Checked)
     pump(app, 0.2)
     assert tree.collection_item(c.id).checkState(0) == Qt.PartiallyChecked
+
+
+def _wait_idle(engine, app, seconds=10):
+    end = time.time() + seconds
+    while engine.status().state != "idle" and time.time() < end:
+        pump(app, 0.1)
+    pump(app, 0.2)
+
+
+def test_remove_collection_drops_it_and_its_index_but_not_files(window, tmp_path, monkeypatch):
+    from collection_search.ui import main_window
+
+    w, tray, settings, engine, app = window
+    _wait_idle(engine, app)
+    assert len(engine.indexed_files()[1]) == 1
+    cid = settings.collections()[0].id
+
+    # Cancelling keeps everything.
+    monkeypatch.setattr(main_window, "_confirm_remove", lambda parent, c: False)
+    w.collection_tree.remove_requested.emit(cid)
+    assert settings.get_collection(cid) is not None
+
+    monkeypatch.setattr(main_window, "_confirm_remove", lambda parent, c: True)
+    w.collection_tree.remove_requested.emit(cid)
+    pump(app, 0.2)
+    _wait_idle(engine, app)
+    assert settings.collections() == []
+    assert w.collection_tree.topLevelItemCount() == 0
+    assert "Docs" not in [a.text() for a in tray.menu.actions()]
+    assert engine.indexed_files()[1] == {}
+    assert (tmp_path / "docs" / "a.txt").exists()
+
+
+def test_remove_is_offered_on_a_collection_row(window, monkeypatch):
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QKeyEvent
+
+    from collection_search.ui import main_window
+
+    w, tray, settings, engine, app = window
+    monkeypatch.setattr(main_window, "_confirm_remove", lambda parent, c: False)
+    asked = []
+    w.collection_tree.remove_requested.connect(asked.append)
+    w.collection_tree.setCurrentItem(w.collection_tree.topLevelItem(0))
+    w.collection_tree.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Delete, Qt.NoModifier))
+    assert asked == [settings.collections()[0].id]

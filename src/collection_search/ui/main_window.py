@@ -83,14 +83,17 @@ class MainWindow(QMainWindow):
         self.collection_tree.collection_toggled.connect(self.settings.set_collection_active)
         self.collection_tree.switch_toggled.connect(self.settings.set_switch)
         self.collection_tree.edit_requested.connect(self._edit_collection_id)
+        self.collection_tree.remove_requested.connect(self._remove_collection_id)
         self.collection_tree.open_requested.connect(_open_path)
         self.collection_tree.show_in_folder.connect(_show_in_folder)
-        add, edit, delete = QPushButton("Add…"), QPushButton("Edit…"), QPushButton("Delete")
+        add, edit, remove = QPushButton("Add…"), QPushButton("Edit…"), QPushButton("Remove…")
         add.clicked.connect(self.add_collection)
         edit.clicked.connect(self.edit_collection)
-        delete.clicked.connect(self.delete_collection)
+        remove.clicked.connect(self.remove_collection)
+        remove.setToolTip("Remove the selected collection from the app and its index. "
+                          "Your files on disk are not touched.")
         buttons = QHBoxLayout()
-        for b in (add, edit, delete):
+        for b in (add, edit, remove):
             buttons.addWidget(b)
         buttons.addStretch()
         hint = QLabel("Claude can only search collections that are ticked. Open a collection to switch "
@@ -141,17 +144,21 @@ class MainWindow(QMainWindow):
         if result:
             self.settings.upsert_collection(result)
 
-    def delete_collection(self) -> None:
-        cid = self._selected_collection_id()
+    def remove_collection(self) -> None:
+        self._remove_collection_id(self._selected_collection_id())
+
+    delete_collection = remove_collection  # older name
+
+    def _remove_collection_id(self, cid: str | None) -> None:
         collection = self.settings.get_collection(cid) if cid else None
         if not collection:
+            QMessageBox.information(self, "Remove collection", "Select a collection in the list first.")
             return
-        answer = QMessageBox.question(
-            self, "Delete collection",
-            f"Delete {collection.name}? Your files are not touched; they just stop being searchable.",
-        )
-        if answer == QMessageBox.Yes:
-            self.settings.delete_collection(cid)
+        if not _confirm_remove(self, collection):
+            return
+        # Removing it from the settings re-runs indexing, which drops the documents only this
+        # collection held from the index. Documents another collection also covers stay.
+        self.settings.delete_collection(cid)
 
     # ---- collection picker (Search and Similar tabs) -----------------------------------
     def _scope_picker(self) -> QComboBox:
@@ -569,6 +576,22 @@ def _show_in_folder(path: str) -> None:
         subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
     else:
         QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
+
+
+def _confirm_remove(parent, collection: Collection) -> bool:
+    folders = "\n".join(f"    {f}" for f in collection.folders)
+    box = QMessageBox(QMessageBox.Warning, "Remove collection",
+                      f"Remove the collection \u201c{collection.name}\u201d?", parent=parent)
+    box.setInformativeText(
+        "It is taken out of the app and its documents are dropped from the search index, so Claude "
+        "and the Search, Similar and Map tabs no longer see them.\n\n"
+        f"Your files are not deleted. They stay where they are on disk:\n{folders}\n\n"
+        "To use them again later, add the folders as a new collection.")
+    remove = box.addButton("Remove collection", QMessageBox.DestructiveRole)
+    box.addButton(QMessageBox.Cancel)
+    box.setDefaultButton(QMessageBox.Cancel)
+    box.exec()
+    return box.clickedButton() is remove
 
 
 def _run_dialog(dialog: CollectionDialog):
