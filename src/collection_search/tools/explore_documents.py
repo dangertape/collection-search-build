@@ -7,8 +7,7 @@ TITLE = "Explore connected documents"
 DESCRIPTION = """
 Map how the user's documents connect around a topic or a file, in one call.
 Starts from the best matches for a query (or from one file), then follows
-links, backlinks and similar documents outward for a
-step or two. Pass "collection" to stay inside one collection (a starting
+links, backlinks and similar documents outward for a step or two. Pass "collection" to stay inside one collection (a starting
 file must be in it). Returns each document found, how it was reached, and its
 passage most relevant to the query, plus the connections between them. Use it for
 research and cross-referencing questions ("what do my notes say about X
