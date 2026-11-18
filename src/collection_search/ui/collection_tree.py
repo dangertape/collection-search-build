@@ -89,6 +89,7 @@ class CollectionTree(QTreeWidget):
     collection_toggled = Signal(str, bool)  # collection id, on
     switch_toggled = Signal(str, str, bool)  # collection id, path, on
     edit_requested = Signal(str)  # collection id
+    remove_requested = Signal(str)  # collection id
     open_requested = Signal(str)  # file path
     show_in_folder = Signal(str)  # path
 
@@ -277,6 +278,8 @@ class CollectionTree(QTreeWidget):
             if c and c.switches:
                 menu.addAction("Switch every folder and document back on",
                                lambda: [self.switch_toggled.emit(cid, f, True) for f in c.folders])
+            menu.addSeparator()
+            menu.addAction("Remove collection…", lambda: self.remove_requested.emit(cid))
         else:
             path = item.data(0, PATH_ROLE)
             if kind == "file":
@@ -284,6 +287,13 @@ class CollectionTree(QTreeWidget):
             menu.addAction("Show in folder", lambda: self.show_in_folder.emit(path))
             menu.addAction("Copy path", lambda: QGuiApplication.clipboard().setText(path))
         menu.exec(self.viewport().mapToGlobal(pos))
+
+    def keyPressEvent(self, event) -> None:
+        item = self.currentItem()
+        if event.key() == Qt.Key_Delete and item is not None and item.data(0, KIND_ROLE) == "collection":
+            self.remove_requested.emit(item.data(0, ID_ROLE))
+            return
+        super().keyPressEvent(event)
 
     # ---- helpers ----------------------------------------------------------------------
     def _all_items(self):
