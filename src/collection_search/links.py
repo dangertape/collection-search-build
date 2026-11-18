@@ -1,7 +1,8 @@
 """Connections between documents: note links and Bible verse references.
 
 While a file is indexed, its text is scanned for
-  - Obsidian-style [[wikilinks]] and Markdown [text](other.md) links, and
+  - Obsidian-style [[wikilinks]], Markdown [text](other.md) links and HTML
+    <a href> links to other local files, and
   - verse references such as "Exod 20:4", "1 Cor. 8:4-6" or "John 3:16".
 
 Each one is stored as a target key:
@@ -191,12 +192,12 @@ def extract(path: str, sections: list[Section]) -> list[Link]:
             if target:
                 links.append(Link("link", name_key(target), (m.group(2) or target).strip(),
                                   section.location, section.heading))
-        for m in _MDLINK_RE.finditer(text):
-            href = unquote(m.group(2).split("#", 1)[0])
+        hrefs = [(m.group(2), m.group(1)) for m in _MDLINK_RE.finditer(text)] + list(section.links)
+        for raw, label in hrefs:
+            href = unquote(raw.split("#", 1)[0].split("?", 1)[0])
             if not href or re.match(r"^[a-z][a-z0-9+.\-]*:", href, re.IGNORECASE):
                 continue  # web and mail links, and same-page anchors
-            label = m.group(1).strip() or href
-            links.append(Link("link", "path:" + path_key(os.path.join(folder, href)), label,
+            links.append(Link("link", "path:" + path_key(os.path.join(folder, href)), label.strip() or href,
                               section.location, section.heading))
         for book, chapter, label in verse_references(text):
             links.append(Link("verse", verse_key(book, chapter), label, section.location, section.heading))

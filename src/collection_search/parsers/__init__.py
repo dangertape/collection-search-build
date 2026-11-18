@@ -17,7 +17,8 @@ class Section:
 
     text: str
     location: str  # e.g. "page 3" or "paragraph 12"
-    heading: str = ""  # the headings above this text, e.g. "Exodus 20 > 4" (Markdown, Word and EPUB)
+    heading: str = ""  # the headings above this text, e.g. "Exodus 20 > 4" (Markdown, Word, EPUB and HTML)
+    links: tuple[tuple[str, str], ...] = ()  # (href, link text) of hyperlinks in this text (HTML)
 
 
 class ParseError(Exception):
@@ -25,12 +26,14 @@ class ParseError(Exception):
 
 
 def _registry() -> dict[str, Callable[[str], list[Section]]]:
-    from . import docx_parser, epub_parser, pdf_parser, text_parser
+    from . import docx_parser, epub_parser, html_parser, pdf_parser, text_parser
 
     return {
         ".pdf": pdf_parser.parse,
         ".docx": docx_parser.parse,
         ".epub": epub_parser.parse,
+        ".html": html_parser.parse,
+        ".htm": html_parser.parse,
         ".txt": text_parser.parse,
         ".md": text_parser.parse,
         ".markdown": text_parser.parse,
