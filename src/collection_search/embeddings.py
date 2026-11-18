@@ -27,6 +27,10 @@ CPU_BATCH = 16
 # text to one of a few lengths, and every batch to the full batch size, keeps the shapes to
 # a handful that are set up once. On the CPU a new shape costs nothing, so it pads as usual.
 TOKEN_BUCKETS = (64, 128, 256, 512)
+# At most this many tokens (batch x length) per model call on the graphics card. One call
+# that runs for more than about two seconds trips Windows' GPU timeout and resets the driver,
+# which a 64 x 512 batch did on a busy card. So longer texts go in smaller batches.
+MAX_BATCH_TOKENS = 8192
 
 log = logging.getLogger(__name__)
 
@@ -110,10 +114,11 @@ class FastEmbedder:
                 tokenizer.enable_padding(pad_id=saved["pad_id"], pad_token=saved["pad_token"],
                                          pad_type_id=saved.get("pad_type_id", 0),
                                          direction=saved.get("direction", "right"), length=length)
-                for start in range(0, len(indexes), batch):
-                    part = indexes[start:start + batch]
-                    filled = [texts[i] for i in part] + [""] * (batch - len(part))  # a full batch
-                    for i, vec in zip(part, run(filled, batch_size=batch)):
+                size = max(1, min(batch, MAX_BATCH_TOKENS // length))
+                for start in range(0, len(indexes), size):
+                    part = indexes[start:start + size]
+                    filled = [texts[i] for i in part] + [""] * (size - len(part))  # a full batch
+                    for i, vec in zip(part, run(filled, batch_size=size)):
                         out[i] = vec.tolist()
         finally:
             tokenizer.enable_padding(**saved)
