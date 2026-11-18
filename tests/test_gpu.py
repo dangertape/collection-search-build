@@ -161,5 +161,5 @@ def test_fixed_shapes_pad_to_buckets_and_full_batches(monkeypatch):
     vectors = e.embed_documents(texts)
     assert [v[0] for v in vectors] == [3, 300, 70, 5, 1000]  # back in the original order
     assert {size for size, _ in calls} == {embeddings.GPU_BATCH}  # every batch full
-    assert sorted(length for _, length in calls) == [64, 128, 512, 512]
+    assert sorted(length for _, length in calls) == [64, 128, 512]  # 300 and 1000 tokens share the 512 batch
     assert tok.padding["length"] is None  # the tokenizer's own padding is restored
