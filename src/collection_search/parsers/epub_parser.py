@@ -24,16 +24,8 @@ from html.parser import HTMLParser
 from urllib.parse import unquote
 from xml.etree import ElementTree
 
-from . import ParseError, Section
+from . import ParseError, Section, html_parser
 
-BLOCKS = {
-    "p", "div", "li", "blockquote", "pre", "dd", "dt", "figcaption", "caption",
-    "td", "th", "tr", "section", "article", "aside", "header", "footer",
-    "table", "ul", "ol", "dl", "hr", "body",
-    "h1", "h2", "h3", "h4", "h5", "h6",
-}
-HEADINGS = {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
-SKIP = {"head", "script", "style", "title", "svg", "math"}
 # Fonts may be "encrypted" only to stop reuse; that is not DRM.
 FONT_OBFUSCATION = {"http://www.idpf.org/2008/embedding", "http://ns.adobe.com/pdf/enc#RC"}
 
@@ -190,65 +182,7 @@ class _NavParser(HTMLParser):
 
 def _blocks(html: str) -> list[tuple[str, int]]:
     """(text, heading level or 0) for each block of text, in order."""
-    parser = _TextParser()
-    parser.feed(html)
-    parser.close()
-    return parser.blocks
-
-
-class _TextParser(HTMLParser):
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.blocks: list[tuple[str, int]] = []
-        self._buf: list[str] = []
-        self._skip = 0
-        self._level = 0
-
-    def _flush(self):
-        lines = [" ".join(line.split()) for line in "".join(self._buf).split("\n")]
-        text = "\n".join(line for line in lines if line)
-        if text:
-            self.blocks.append((text, self._level))
-        self._buf = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag in SKIP:
-            self._skip += 1
-        elif self._skip:
-            return
-        elif tag == "br":
-            self._buf.append("\n")
-        elif tag == "img":
-            alt = dict(attrs).get("alt") or ""
-            if alt.strip() and self._level:
-                self._buf.append(alt)  # headings that are pictures of text
-        elif tag in BLOCKS:
-            self._flush()
-            if tag in HEADINGS:
-                self._level = HEADINGS[tag]
-
-    def handle_startendtag(self, tag, attrs):
-        if tag in SKIP:
-            return
-        self.handle_starttag(tag, attrs)
-
-    def handle_endtag(self, tag):
-        if tag in SKIP:
-            self._skip = max(0, self._skip - 1)
-        elif self._skip:
-            return
-        elif tag in BLOCKS:
-            self._flush()
-            if tag in HEADINGS:
-                self._level = 0
-
-    def handle_data(self, data):
-        if not self._skip:
-            self._buf.append(data.replace("\n", " "))
-
-    def close(self):
-        super().close()
-        self._flush()
+    return html_parser.blocks(html)
 
 
 # Helpers -------------------------------------------------------------------

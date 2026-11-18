@@ -79,3 +79,13 @@ def test_new_file_types_start_on_in_saved_collections(tmp_path):
     again = {c.id: c for c in Settings.load(str(path)).collections()}
     assert ".epub" in again["a"].extensions
     assert again["b"].extensions == [".pdf"]
+
+
+def test_html_starts_on_in_collections_saved_with_epub(tmp_path):
+    path = tmp_path / "settings.json"
+    known = [".docx", ".epub", ".markdown", ".md", ".pdf", ".txt"]
+    path.write_text(json.dumps({"version": 2, "collections": [
+        {"name": "Notes", "folders": ["/notes"], "id": "a", "extensions": [".md", ".epub"], "known_extensions": known},
+    ]}))
+    (notes,) = Settings.load(str(path)).collections()
+    assert notes.extensions == [".md", ".epub", ".htm", ".html"]
