@@ -52,7 +52,7 @@ class Result:
     collections: tuple[str, ...]
     location: str
     score: float
-    heading: str = ""  # headings above the passage, e.g. "Exodus 20 > 4-6"
+    heading: str = ""  # headings above the passage, e.g. "Chapter 3 > 2-4"
 
 
 def allowed_files(store: Store, active: Iterable[Collection]) -> dict[int, tuple[str, ...]]:
@@ -180,7 +180,7 @@ def read_file(
     """Text of one indexed file, only if an active collection allows it.
 
     With `around` (a location like "paragraphs 12-15" or a heading like
-    "Exodus 20 > 4"), only that part and `context` sections either side are returned.
+    "Chapter 3 > Methods"), only that part and `context` sections either side are returned.
     """
     record, names = _allowed_record(store, path, active)
     try:
@@ -240,7 +240,7 @@ def find_span(sections, around: str) -> tuple[int, int] | None:
     single = one(around)
     if single is not None:
         return single, single
-    # A heading range from a result, "Exodus 20 > 4-6": from the first heading to the last.
+    # A heading range from a result, "Chapter 3 > 2-4": from the first heading to the last.
     head, _, last_part = around.rpartition(" > ")
     if "-" in last_part:
         a_text, b_text = last_part.split("-", 1)
@@ -252,7 +252,7 @@ def find_span(sections, around: str) -> tuple[int, int] | None:
 
 
 def _heading_span(sections, around: str) -> tuple[int, int] | None:
-    """The run of sections under a heading, e.g. "Exodus 20 > 4", or just its last part, "4"."""
+    """The run of sections under a heading, e.g. "Chapter 3 > Methods", or just its last part, "4"."""
     wanted = around.lower().strip()
     for test in (lambda h: h == wanted, lambda h: h.endswith(" > " + wanted), lambda h: wanted in h):
         hits = [i for i, s in enumerate(sections) if s.heading and test(s.heading.lower())]
@@ -390,7 +390,7 @@ def _clip(text: str) -> str:
 
 # ---- links between documents ---------------------------------------------------
 #
-# Links and verse references are stored per file while indexing (links.py).
+# Links are stored per file while indexing (links.py).
 # Here they are matched up with the files in the active collections, so a
 # link never leads outside the user's scope.
 
@@ -413,7 +413,7 @@ def _target_index(store: Store, allowed: dict[int, tuple[str, ...]]) -> tuple[di
 
 
 def _mention(row) -> dict:
-    out = {"kind": "verse reference" if row.kind == "verse" else "link", "text": row.label, "location": row.location}
+    out = {"text": row.label, "location": row.location}
     if row.heading:
         out["heading"] = row.heading
     return out
@@ -442,7 +442,7 @@ def _incoming(store, file_id, path, allowed) -> dict[int, list]:
 
 
 def document_links(store: Store, path: str, active: Iterable[Collection], limit: int = 30) -> dict:
-    """What a file links to, what links back to it, and the verses it mentions."""
+    """What a file links to and what links back to it."""
     active = [c for c in active if c.active]
     record, names = _allowed_record(store, path, active)
     allowed = allowed_files(store, active)
@@ -458,7 +458,6 @@ def document_links(store: Store, path: str, active: Iterable[Collection], limit:
             for fid, rows in ordered[:limit]
         ]
 
-    verses = [r.label for r in store.links_from(record.id) if r.kind == "verse"]
     return {
         "path": record.path,
         "collections": list(names),
@@ -466,7 +465,6 @@ def document_links(store: Store, path: str, active: Iterable[Collection], limit:
         "linked_from": listing(incoming),
         "links_to_total": len(outgoing),
         "linked_from_total": len(incoming),
-        "verses_mentioned": list(dict.fromkeys(verses))[:100],
         "links_not_found": list(dict.fromkeys(r.label for r in unresolved))[:30],
     }
 
@@ -487,7 +485,7 @@ def explore(
     steps: int = 2,
     max_documents: int = 15,
 ) -> dict:
-    """Start from a search or a file, then follow links, backlinks, verse references
+    """Start from a search or a file, then follow links, backlinks
     and similar documents outward, up to `steps` hops and `max_documents` files."""
     import numpy as np
 
@@ -534,12 +532,10 @@ def explore(
         for fid in frontier:
             before = set(step_of)
             outgoing, _ = _outgoing(store, fid, index)
-            for target, rows in outgoing.items():
-                how = "mentions verses in" if all(r.kind == "verse" for r in rows) else "links to"
-                connect(fid, target, fid, target, how, step)
-            for source, rows in _incoming(store, fid, paths[fid], allowed).items():
-                how = "mentions verses in" if all(r.kind == "verse" for r in rows) else "links to"
-                connect(fid, source, source, fid, how, step)
+            for target in outgoing:
+                connect(fid, target, fid, target, "links to", step)
+            for source in _incoming(store, fid, paths[fid], allowed):
+                connect(fid, source, source, fid, "links to", step)
             doc = store.doc_vector(fid)
             if doc is not None:
                 for other, sim in store.similar_files(doc, ids, EXPLORE_SIMILAR + 1):

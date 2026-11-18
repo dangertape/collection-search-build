@@ -78,6 +78,7 @@ class Store:
         self.db.execute("PRAGMA foreign_keys=ON")
         self._upgrade_schema()
         self._create_schema()
+        self._drop_old_link_kinds()
         try:
             self._check_model(model_name, dim)
         except ModelMismatch:
@@ -104,6 +105,11 @@ class Store:
                               "DROP TABLE IF EXISTS chunks", "DROP TABLE IF EXISTS files"):
                 self.db.execute(statement)
             self.db.execute("UPDATE meta SET value = ? WHERE key = 'schema'", (str(SCHEMA_VERSION),))
+
+    def _drop_old_link_kinds(self) -> None:
+        """Older versions also stored detected text patterns as links; only links the user wrote are kept."""
+        with self.db:
+            self.db.execute("DELETE FROM links WHERE kind != 'link'")
 
     def _create_schema(self) -> None:
         self.db.executescript(
@@ -137,7 +143,7 @@ class Store:
                 file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
                 embedding BLOB NOT NULL
             );
-            -- Links and verse references found in each file (see links.py).
+            -- Links found in each file (see links.py).
             CREATE TABLE IF NOT EXISTS links (
                 file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
                 kind TEXT NOT NULL,

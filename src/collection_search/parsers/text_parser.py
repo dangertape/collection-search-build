@@ -26,7 +26,7 @@ def parse(path: str) -> list[Section]:
     markdown = os.path.splitext(path)[1].lower() in MARKDOWN
     # Location by paragraph number keeps results pointing somewhere useful.
     # In Markdown each paragraph also carries the headings above it, so a
-    # result can say "Exodus 20 > 4" instead of only "paragraph 12".
+    # result can say "Chapter 3 > Methods" instead of only "paragraph 12".
     sections = []
     trail: list[tuple[int, str]] = []  # (level, title) of the headings we are under
     for i, para in enumerate(_paragraphs(text), start=1):

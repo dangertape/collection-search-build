@@ -17,7 +17,7 @@ class Section:
 
     text: str
     location: str  # e.g. "page 3" or "paragraph 12"
-    heading: str = ""  # the headings above this text, e.g. "Exodus 20 > 4" (Markdown, Word, EPUB and HTML)
+    heading: str = ""  # the headings above this text, e.g. "Chapter 3 > Methods" (Markdown, Word, EPUB and HTML)
     links: tuple[tuple[str, str], ...] = ()  # (href, link text) of hyperlinks in this text (HTML)
 
 

@@ -1,4 +1,4 @@
-"""Headings, links, verse references, paging, reading around a passage, and explore."""
+"""Headings, links, paging, reading around a passage, and explore."""
 
 import json
 import os
@@ -9,7 +9,7 @@ import pytest
 from collection_search import claude_config
 from collection_search.collections import Collection
 from collection_search.indexer import sync
-from collection_search.links import chapter_of, extract, verse_references
+from collection_search.links import extract, file_keys
 from collection_search.parsers import Section
 from collection_search.search import (
     LocationNotFound, NotAllowed, document_links, explore, read_file, search, search_page,
@@ -24,20 +24,12 @@ SECRET = "zebracorn"
 
 # ---- parsing -------------------------------------------------------------------------
 
-def test_verse_references():
-    text = ("See Exod 20:4-6, 1 Cor. 8:4 and John 3:16; Ps 115:4–8, I Jn 2:2, Isa 44:9. "
-            "The meeting is 3:30 and the ratio is 2:1.")
-    labels = [label for _, _, label in verse_references(text)]
-    assert labels == ["Exodus 20:4-6", "1 Corinthians 8:4", "John 3:16", "Psalms 115:4-8",
-                      "1 John 2:2", "Isaiah 44:9"]
-
-
-def test_chapter_files():
-    assert chapter_of("Exod-20.md") == ("Exodus", 20)
-    assert chapter_of("/x/02 - Exodus/Exodus 20.md") == ("Exodus", 20)
-    assert chapter_of("1 Cor-13.md") == ("1 Corinthians", 13)
-    assert chapter_of("1John-1.md") == ("1 John", 1)
-    assert chapter_of("Idols study.md") is None
+def test_only_written_links_count():
+    # Nothing about the content is assumed: references, times and ratios are just text.
+    text = "See Exod 20:4-6 and John 3:16. Call Mark 3:30; Job 5:6 failed. The ratio is 2:1."
+    assert extract("/x/notes.md", [Section(text, "paragraph 1")]) == []
+    keys = file_keys("/x/Exod-20.md")
+    assert keys[0] == "name:exod-20" and [k.split(":")[0] for k in keys] == ["name", "path"]
 
 
 def test_extract_links(tmp_path):
@@ -45,12 +37,11 @@ def test_extract_links(tmp_path):
     sections = [Section("Compare [[Exod-20#v4|the second commandment]] and [the cross](../Cross.md#top), "
                         "[web](https://example.com), Isa 44:9.", "paragraph 3", "Idols > OT")]
     links = extract(src, sections)
-    assert [(l.kind, l.label) for l in links] == [
-        ("link", "the second commandment"), ("link", "the cross"), ("verse", "Isaiah 44:9")]
+    assert [(l.kind, l.label) for l in links] == [("link", "the second commandment"), ("link", "the cross")]
     assert links[0].target == "name:exod-20"
     assert links[1].target.startswith("path:") and links[1].target.endswith("cross.md".lower()) or \
         links[1].target.endswith("Cross.md")
-    assert links[2].target == "verse:Isaiah|44" and links[2].heading == "Idols > OT"
+    assert links[0].heading == "Idols > OT"
 
 
 # ---- a small Bible study kit -------------------------------------------------------------
@@ -155,15 +146,14 @@ def test_document_links(store, kit):
     idols = str(root / "Notes" / "Idols.md")
     links = document_links(store, idols, cols)
     out = {os.path.basename(l["path"]) for l in links["links_to"]}
-    assert out == {"Exod-20.md", "Isa-44.md", "Cross notes.md"}
-    assert "1 Corinthians 8:4" in links["verses_mentioned"]
-    assert "1 Corinthians 8:4" in links["links_not_found"]  # no chapter file for it in the kit
+    assert out == {"Exod-20.md", "Cross notes.md"}  # "Isa 44:9" in the text is not a link
+    assert "verses_mentioned" not in links and links["links_not_found"] == []
     back = {os.path.basename(l["path"]) for l in links["linked_from"]}
     assert back == set()  # only the hidden diary links to Idols
 
     exod = document_links(store, str(root / "Scripture" / "02 - Exodus" / "Exod-20.md"), cols)
     back = {os.path.basename(l["path"]): l for l in exod["linked_from"]}
-    assert set(back) == {"Idols.md", "Cross notes.md"}  # by [[link]] and by "Exodus 20:3"
+    assert set(back) == {"Idols.md"}  # by [[Exod-20]]; "Exodus 20:3" in Cross notes is just text
     assert back["Idols.md"]["examples"][0]["heading"] == "Idols and the cross > Old Testament"
     assert all(SECRET not in json.dumps(l) and "diary" not in l["path"] for l in exod["linked_from"])
 
@@ -182,10 +172,10 @@ def test_explore_follows_links(store, embedder, kit):
     result = explore(store, embedder, cols, path=str(root / "Notes" / "Cross notes.md"), steps=2)
     found = {os.path.basename(d["path"]): d for d in result["documents"]}
     assert found["Cross notes.md"]["step"] == 0
-    assert {"Exod-20.md", "Idols.md"} <= set(found)  # Exod-20 by verse reference, Idols links to Cross
-    assert "Isa-44.md" in found  # two steps: Cross -> Idols -> Isa-44
+    assert {"Exod-20.md", "Idols.md"} <= set(found)  # two steps: Idols links to Cross, and to Exod-20
     assert "diary.md" not in found
-    assert any(c["how"] == "mentions verses in" for c in result["connections"])
+    assert {c["how"] for c in result["connections"]} <= {"links to"} | {
+        c["how"] for c in result["connections"] if c["how"].startswith("is similar")}
 
     by_query = explore(store, embedder, cols, query="idol image", steps=1, max_documents=3)
     assert len(by_query["documents"]) <= 3
@@ -206,6 +196,21 @@ def test_old_index_is_emptied_for_reindex(tmp_path, embedder):
     assert s.stats()["files"] == 0
     cols = [c[1] for c in s.db.execute("PRAGMA table_info(chunks)")]
     assert "heading" in cols
+    s.close()
+
+
+def test_old_verse_rows_are_dropped(tmp_path, embedder):
+    path = str(tmp_path / "index.db")
+    s = Store(path, embedder.name, embedder.dim)
+    write(str(tmp_path / "d" / "a.md"), "See [[b]].")
+    sync(s, embedder, [Collection("D", [str(tmp_path / "d")])])
+    fid = s.db.execute("SELECT id FROM files").fetchone()[0]
+    s.db.execute("INSERT INTO links VALUES (?, 'verse', 'verse:Job|5', 'Job 5:6', 'paragraph 1', '')", (fid,))
+    s.db.commit()
+    s.close()
+    s = Store(path, embedder.name, embedder.dim)
+    assert [r.kind for r in s.links_from(fid)] == ["link"]
+    assert s.stats()["files"] == 1  # kept, no re-index needed
     s.close()
 
 
