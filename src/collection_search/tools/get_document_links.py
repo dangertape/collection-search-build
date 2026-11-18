@@ -6,7 +6,7 @@ NAME = "get_document_links"
 TITLE = "Show a document's links"
 DESCRIPTION = """
 Show how one of the user's documents connects to others: the notes it links
-to ([[wikilinks]] and Markdown links), the notes that link back to it
+to ([[wikilinks]], Markdown links and links in web pages), the notes that link back to it
 (backlinks), and the Bible verse references it mentions, such as
 "Exodus 20:4". A Bible chapter file (like "Exod-20.md") counts as linked from
 every note that mentions a verse in that chapter, so its backlinks show where
