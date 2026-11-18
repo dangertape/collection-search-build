@@ -494,7 +494,8 @@ class MainWindow(QMainWindow):
         else:
             self.progress.hide()
         synced = time.strftime("%H:%M", time.localtime(status.last_sync)) if status.last_sync else "not yet"
-        self.counts_label.setText(f"{status.files} files, {status.chunks} passages indexed. Last check: {synced}.")
+        runs_on = f" Search model runs on the {status.device}." if status.device else ""
+        self.counts_label.setText(f"{status.files} files, {status.chunks} passages indexed. Last check: {synced}.{runs_on}")
         self.errors.setPlainText("\n".join(f"{os.path.basename(p)}: {e}    ({p})" for p, e in status.errors))
 
     def _reindex(self) -> None:

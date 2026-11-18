@@ -65,10 +65,11 @@ class Status:
     chunks: int = 0
     errors: tuple[tuple[str, str], ...] = field(default_factory=tuple)
     last_sync: float | None = None
+    device: str = ""  # where the search model runs: "GPU (DirectML)" or "CPU"
 
 
-def default_embedder_factory(models_dir: str | None) -> EmbedderFactory:
-    return lambda model: FastEmbedder(model, cache_dir=models_dir)
+def default_embedder_factory(models_dir: str | None, use_gpu: Callable[[], bool] = lambda: True) -> EmbedderFactory:
+    return lambda model: FastEmbedder(model, cache_dir=models_dir, use_gpu=use_gpu())
 
 
 class Engine:
@@ -310,6 +311,7 @@ class Engine:
         self._set_status(state="loading model", message=f"Loading search model {model} (first run downloads it)")
         self._embedder = self._factory(model)
         self._loaded_model = model
+        self._set_status(device=getattr(self._embedder, "device", ""))
         self._open_index()
 
     def _open_index(self) -> None:
@@ -444,6 +446,7 @@ class _Locked:
     def __init__(self, embedder: Embedder, lock: threading.Lock, held: bool = False):
         self._e, self._lock, self._held = embedder, lock, held
         self.name, self.dim = embedder.name, embedder.dim
+        self.preferred_batch = getattr(embedder, "preferred_batch", 64)
 
     def embed_documents(self, texts):
         if self._held:

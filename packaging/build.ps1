@@ -7,6 +7,12 @@ Set-Location (Join-Path $PSScriptRoot "..")
 if (-not (Test-Path .venv)) { py -3.12 -m venv .venv }
 .\.venv\Scripts\python -m pip install --upgrade pip
 .\.venv\Scripts\python -m pip install -e ".[dev,build]"
+# Swap the CPU-only onnxruntime that fastembed pulls in for the DirectML build, which runs
+# the search model on any DirectX 12 graphics card (Nvidia, AMD, Intel) and on the CPU
+# otherwise. Both packages install the same "onnxruntime" module, so only one may be present.
+.\.venv\Scripts\python -m pip uninstall -y onnxruntime onnxruntime-directml
+.\.venv\Scripts\python -m pip install --no-deps onnxruntime-directml
+.\.venv\Scripts\python -c "import onnxruntime as o; p = o.get_available_providers(); print('onnxruntime providers:', p); assert 'DmlExecutionProvider' in p"
 
 if ($BundleModel) {
     # Download the embedding model into .\models so the app works offline from first run.
