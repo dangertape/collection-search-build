@@ -126,3 +126,40 @@ def test_cpu_when_no_card_or_switched_off(monkeypatch):
     assert embeddings.FastEmbedder("m").device == "CPU"
     _fake_fastembed(monkeypatch, gpu=True)
     assert embeddings.FastEmbedder("m", use_gpu=False).device == "CPU"
+
+
+def test_fixed_shapes_pad_to_buckets_and_full_batches(monkeypatch):
+    calls = []
+
+    class Tok:
+        padding = {"length": None, "pad_to_multiple_of": None, "pad_id": 0, "pad_token": "[PAD]",
+                   "pad_type_id": 0, "direction": "right"}
+
+        def encode_batch(self, texts):
+            return [types.SimpleNamespace(attention_mask=[1] * len(t.split())) for t in texts]
+
+        def enable_padding(self, **kw):
+            self.padding = dict(kw)
+
+    class Model(_FakeModel):
+        def passage_embed(self, texts, batch_size):
+            import numpy as np
+
+            calls.append((len(texts), tok.padding["length"]))
+            for t in texts:
+                yield np.full(4, len(t.split()), dtype=float)
+
+    tok = Tok()
+    module = types.ModuleType("fastembed")
+    module.TextEmbedding = Model
+    monkeypatch.setitem(sys.modules, "fastembed", module)
+    monkeypatch.setattr(embeddings, "gpu_available", lambda: True)
+    e = embeddings.FastEmbedder("m")
+    e._model.model = types.SimpleNamespace(tokenizer=tok)
+    calls.clear()
+    texts = ["w " * n for n in (3, 300, 70, 5, 1000)]
+    vectors = e.embed_documents(texts)
+    assert [v[0] for v in vectors] == [3, 300, 70, 5, 1000]  # back in the original order
+    assert {size for size, _ in calls} == {embeddings.GPU_BATCH}  # every batch full
+    assert sorted(length for _, length in calls) == [64, 128, 512, 512]
+    assert tok.padding["length"] is None  # the tokenizer's own padding is restored
