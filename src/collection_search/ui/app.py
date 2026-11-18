@@ -45,7 +45,7 @@ def main(args: list[str]) -> int:
         return 0
 
     settings = Settings.load(paths.settings_path())
-    engine = Engine(settings, paths.index_path(), default_embedder_factory(paths.models_dir()))
+    engine = Engine(settings, paths.index_path(), default_embedder_factory(paths.models_dir(), lambda: settings.preferences.use_gpu))
     tools = load_tools(paths.addon_dirs())
     try:
         http = HttpServer(build_server(engine, tools), paths.connection_path())

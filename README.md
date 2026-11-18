@@ -25,12 +25,14 @@ Full design: *Collection Search for Claude — Design* in the project files.
 
   Search, explore, find-similar and links take an optional `collection` name to look in just one collection. Only switched-on collections can be named, so this only ever narrows the scope; Claude can't widen it. Every tool is marked read-only, which Claude Desktop uses to group them in its tool permissions. Each tool has its own on/off switch. A tool that is off returns a short error on Claude's next call, in the same chat.
 - **Add-on tools.** Drop a `.py` file into a `tools` folder and restart. See [Writing an add-on tool](#writing-an-add-on-tool).
+- **Graphics card.** The search model runs on the graphics card through DirectML when the PC has one (any DirectX 12 card: Nvidia, AMD or Intel), and on the CPU otherwise. While it indexes, the app reads the next files in the background and sends passages from several files to the model at once, so the card stays busy. The Status tab says where the model runs. To keep it on the CPU, set `"use_gpu": false` under `preferences` in `settings.json` and restart the app.
+- **Search model.** The default model is `BAAI/bge-base-en-v1.5`, an English model. Versions before 0.3 used the smaller `bge-small-en-v1.5`. Upgrading switches to the new model and re-indexes everything once, automatically. To pick another [fastembed model](https://qdrant.github.io/fastembed/examples/Supported_Models/), set `model` under `preferences` in `settings.json`. Changing the model always re-indexes.
 - **Background indexing.** The app watches the folders for changes, rescans every 10 minutes to catch anything missed, and lists files it couldn't read on the Status tab.
 
 ## Install and connect (Windows)
 
 1. Build the program folder, or use one someone built for you (see [Building](#building)).
-2. Run `CollectionSearch.exe`. The window opens and a tray icon appears. The first start downloads the search model (about 130 MB) unless the build bundled it.
+2. Run `CollectionSearch.exe`. The window opens and a tray icon appears. The first start downloads the search model (about 210 MB) unless the build bundled it.
 3. On the **Collections** tab, click **Add…**, pick your folders and filters, and save. Indexing starts in the background, and the **Status** tab shows progress.
 4. On the **Status** tab, click **Add to Claude Desktop**, then quit and reopen Claude Desktop. This adds the entry below to `%APPDATA%\Claude\claude_desktop_config.json` and backs up the old file first:
 
@@ -84,6 +86,7 @@ The build is a PyInstaller folder build with two programs, and the PC running it
 py -3.12 -m venv .venv
 .venv\Scripts\activate
 pip install -e .[dev]
+pip uninstall -y onnxruntime; pip install --no-deps onnxruntime-directml  # optional: run the model on the graphics card
 python -m collection_search             # the app
 python -m collection_search --mcp       # the shim, as Claude Desktop runs it
 python -m collection_search cli --help  # command-line index/search/eval
@@ -117,7 +120,7 @@ The parameters after `ctx` become the tool's inputs. `ctx` has `search(query, li
 | --- | --- |
 | `parsers/` | PDF, .docx, .txt and .md to text sections with page or paragraph locations |
 | `chunking.py` | Overlapping chunks on paragraph boundaries |
-| `embeddings.py` | fastembed (ONNX, CPU) behind a small interface |
+| `embeddings.py` | fastembed (ONNX; DirectML graphics card, else CPU) behind a small interface |
 | `store.py` | SQLite holding files, chunks, passage and document vectors (sqlite-vec) and FTS5 keywords |
 | `collections.py` | Collection rules: index-time (folders, types) and search-time (dates, patterns) |
 | `indexer.py` | Diff by path, size and mtime; parse, chunk, embed, store |

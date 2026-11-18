@@ -18,7 +18,7 @@ from typing import Callable
 
 from .chunking import DEFAULT_OVERLAP, DEFAULT_SIZE
 from .collections import Collection
-from .embeddings import DEFAULT_MODEL
+from .embeddings import DEFAULT_MODEL, OLD_DEFAULT_MODEL
 from .parsers import SUPPORTED_EXTENSIONS
 
 log = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ TOOLS = "tools"  # a tool was switched on or off
 
 Listener = Callable[[str], None]
 
-SETTINGS_VERSION = 2
+SETTINGS_VERSION = 3
 # Version 2 renamed the tools so Claude tells them apart from other apps'
 # "collections"; a tool's on/off switch follows it to the new name.
 RENAMED_TOOLS = {
@@ -42,6 +42,8 @@ RENAMED_TOOLS = {
 OLD_RESULT_COUNTS = (8, 25)  # version 1 defaults, raised to the new ones
 # The file types the app read before "known_extensions" was saved with each collection.
 OLD_EXTENSIONS = (".docx", ".markdown", ".md", ".pdf", ".txt")
+# Version 3 moved the default search model from bge-small to bge-base. Settings that
+# still name the old default follow it; a model someone picked themselves is kept.
 
 
 @dataclass
@@ -53,6 +55,7 @@ class Preferences:
     max_result_count: int = 50
     rescan_minutes: int = 10
     watch_folders: bool = True
+    use_gpu: bool = True  # run the search model on the graphics card when there is one
 
 
 class Settings:
@@ -117,6 +120,8 @@ class Settings:
             if (p.default_result_count, p.max_result_count) == OLD_RESULT_COUNTS:
                 fresh = Preferences()
                 p.default_result_count, p.max_result_count = fresh.default_result_count, fresh.max_result_count
+        if data.get("version", 1) < 3 and self.preferences.model == OLD_DEFAULT_MODEL:
+            self.preferences.model = DEFAULT_MODEL
         self._index_key = _index_key(self.preferences)
 
     # ---- listeners ----------------------------------------------------------

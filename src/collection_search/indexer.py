@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import stat
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
@@ -28,6 +30,10 @@ class SyncResult:
 
 
 ScanFn = Callable[[int], None]  # files found so far while walking the folders
+
+PARSE_WORKERS = 2  # files read in the background while the model embeds the previous ones
+LOOKAHEAD = 16  # files read ahead of the one being embedded
+DEFAULT_BATCH = 64  # passages per model call when the embedder doesn't say
 SCAN_REPORT_EVERY = 500
 
 
@@ -115,27 +121,74 @@ def sync(
     # Newest first, so recent documents become searchable soonest.
     todo.sort(key=lambda t: t[3], reverse=True)
 
-    for done, (key, path, size, mtime, existed) in enumerate(todo):
-        if cancelled and cancelled():
-            result.cancelled = True
-            break
-        if progress:
-            progress(done, len(todo), path)
-        try:
-            sections = parse(path)
-            chunks = chunk_sections(sections, chunk_size, chunk_overlap)
-            vectors = embedder.embed_documents([c.text for c in chunks]) if chunks else []
-            links = extract_links(path, sections)
-            error = None if chunks else "No text found (scanned or empty file?)"
-        except ParseError as exc:
-            chunks, vectors, links, error = [], [], [], str(exc)
-        if error:
-            result.errors.append((path, error))
-        store.replace_file(path, size, mtime, chunks, vectors, error, links)
-        if existed:
-            result.updated += 1
-        else:
-            result.added += 1
+    # Files are read on worker threads while the model embeds earlier ones, and
+    # passages from several small files share one model call, which is what keeps
+    # a graphics card busy. Files are still stored in order, newest first.
+    batch_target = max(1, getattr(embedder, "preferred_batch", DEFAULT_BATCH))
+    batch: list[tuple[tuple, list, list, str | None]] = []
+    batch_chunks = 0
+
+    def flush() -> None:
+        nonlocal batch, batch_chunks
+        texts = [c.text for _, chunks, _, _ in batch for c in chunks]
+        vectors = embedder.embed_documents(texts) if texts else []
+        at = 0
+        for (key, path, size, mtime, existed), chunks, links, error in batch:
+            file_vectors = vectors[at:at + len(chunks)]
+            at += len(chunks)
+            if error:
+                result.errors.append((path, error))
+            store.replace_file(path, size, mtime, chunks, file_vectors, error, links)
+            if existed:
+                result.updated += 1
+            else:
+                result.added += 1
+        batch, batch_chunks = [], 0
+
+    pool = ThreadPoolExecutor(max_workers=PARSE_WORKERS, thread_name_prefix="read-file")
+    waiting: deque = deque()
+    upcoming = iter(todo)
+
+    def read_ahead() -> None:
+        while len(waiting) < LOOKAHEAD:
+            item = next(upcoming, None)
+            if item is None:
+                return
+            waiting.append((item, pool.submit(_read, item[1], chunk_size, chunk_overlap)))
+
+    try:
+        read_ahead()
+        done = 0
+        while waiting:
+            if cancelled and cancelled():
+                result.cancelled = True  # files read but not yet stored are picked up next time
+                break
+            item, future = waiting.popleft()
+            read_ahead()
+            if progress:
+                progress(done, len(todo), item[1])
+            chunks, links, error = future.result()
+            batch.append((item, chunks, links, error))
+            batch_chunks += len(chunks)
+            done += 1
+            if batch_chunks >= batch_target:
+                flush()
+        if not result.cancelled:
+            flush()
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     if progress and not result.cancelled:
         progress(len(todo), len(todo), "")
     return result
+
+
+def _read(path: str, chunk_size: int, chunk_overlap: int) -> tuple[list, list, str | None]:
+    """Parse and chunk one file: (chunks, links, error). Runs on a worker thread."""
+    try:
+        sections = parse(path)
+        chunks = chunk_sections(sections, chunk_size, chunk_overlap)
+        links = extract_links(path, sections)
+        error = None if chunks else "No text found (scanned or empty file?)"
+    except ParseError as exc:
+        chunks, links, error = [], [], str(exc)
+    return chunks, links, error
