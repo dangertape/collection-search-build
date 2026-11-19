@@ -11,7 +11,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 
 from .parsers import SUPPORTED_EXTENSIONS
@@ -99,6 +99,34 @@ class Collection:
         if above != on:
             kept[path] = on
         return kept
+
+
+def narrow_to_folder(collections: list[Collection], folder: str) -> list[Collection]:
+    """The collections cut down to one folder and everything inside it.
+
+    `folder` is a full path, or a path relative to a collection's top folders
+    (it is tried under each). Each collection keeps its exclusions, filters and
+    switches, so a folder can only narrow what is already visible. A folder
+    outside every collection, excluded or switched off, or missing, matches
+    nothing, and a relative path can't climb out of a top folder.
+    """
+    folder = folder.strip().strip('"').strip()
+    out = []
+    for c in collections:
+        roots: dict[str, str] = {}
+        for root in c.folders:
+            rk = path_key(root)
+            candidate = folder if os.path.isabs(folder) else os.path.join(root, folder)
+            key = path_key(candidate)
+            if _is_under(key, rk) and os.path.isdir(candidate):
+                if any(_is_under(key, ex) for ex in c._excluded_keys) or c.switch_state(key) == "off":
+                    continue
+                roots.setdefault(key, os.path.normpath(candidate))
+            elif os.path.isabs(folder) and _is_under(rk, key):  # a folder above the top folder takes all of it
+                roots.setdefault(rk, root)
+        if roots:
+            out.append(replace(c, folders=list(roots.values())))
+    return out
 
 
 def _nearest(key: str, switches: dict[str, bool], default: bool) -> bool:

@@ -183,7 +183,8 @@ class Engine:
     def document_links(self, path: str, limit: int = 30, collections: list[Collection] | None = None) -> dict:
         with self._guard():
             store, _ = self._for_query()
-            return search_core.document_links(store, path, self._scope(collections), limit)
+            return search_core.document_links(store, path, self._scope(collections), limit,
+                                              self._source_scope(collections))
 
     def explore(self, query: str | None, path: str | None, steps: int = 2, max_documents: int = 15,
                 collections: list[Collection] | None = None) -> dict:
@@ -191,14 +192,22 @@ class Engine:
             store, embedder = self._for_query()
             with self._embed_lock:
                 return search_core.explore(store, _Locked(embedder, self._embed_lock, held=True),
-                                           self._scope(collections), query, path, steps, max_documents)
+                                           self._scope(collections), query, path, steps, max_documents,
+                                           self._source_scope(collections))
 
     def find_similar(self, path: str, limit: int, passages: int = 2,
                      collections: list[Collection] | None = None) -> search_core.SimilarResult:
         with self._guard():
             store, _ = self._for_query()
             limit = max(1, min(limit, self.settings.preferences.max_result_count))
-            return search_core.find_similar(store, path, self._scope(collections), limit, passages)
+            return search_core.find_similar(store, path, self._scope(collections), limit, passages,
+                                            self._source_scope(collections))
+
+    def folder_tree(self, collections: list[Collection] | None = None, depth: int = 2) -> dict:
+        """Folders holding visible documents in `collections` (None: the active ones)."""
+        with self._guard():
+            store, _ = self._for_query()
+            return search_core.folder_tree(store, self._scope(collections), depth)
 
     def similarity_map(self, cancelled: Callable[[], bool] = lambda: False, passages: bool = False):
         """Map of the documents (or, with `passages`, the passages) in the ticked collections.
@@ -253,6 +262,12 @@ class Engine:
         if collections is None:
             return self.settings.active_collections()
         return [c if c.active else replace(c, active=True) for c in collections]
+
+    def _source_scope(self, collections: list[Collection] | None) -> list[Collection]:
+        """Where the file a call starts from may be: anywhere the call looks, or in any active
+        collection. So Claude can compare a file with one folder or collection, but never start
+        from a file the user has switched off."""
+        return self._scope(collections) + self.settings.active_collections()
 
     def active_collection_names(self) -> list[str]:
         return [c.name for c in self.settings.active_collections()]

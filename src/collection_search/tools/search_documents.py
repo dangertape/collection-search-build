@@ -18,11 +18,19 @@ for Markdown and Word files, the headings above it (for example
 For a thorough answer, don't stop at one search: search again with other
 wording, synonyms and specific names or references; use a limit of 20 or more
 for research questions; and ask for the next page with offset when the
-results are still relevant. To search only one collection (when the user
-names one, like "search my work notes"), pass its name as "collection";
-list_document_collections shows the names. Then use get_document_links or
-explore_documents to follow connections, and read_document with "around" to see a passage in
-context.
+results are still relevant.
+
+To narrow the search, pass "collection" (one switched-on collection, by name
+from list_document_collections) and/or "folder" (one folder and everything
+inside it; list_document_folders shows the folders). Narrow when the user
+names a collection or folder, when several collections are on and the
+question belongs to one of them, or when earlier results show the answer sits
+in one part of a large collection. Searching a narrower scope also brings up
+passages that would otherwise be crowded out. When unsure, search everything
+first, then narrow.
+
+Then use get_document_links or explore_documents to follow connections, and
+read_document with "around" to see a passage in context.
 """
 
 
@@ -32,8 +40,9 @@ def handler(
     limit: Annotated[int | None, Field(description="How many passages to return (default 15)", ge=1, le=50)] = None,
     offset: Annotated[int, Field(description="Skip this many results, to get the next page", ge=0, le=500)] = 0,
     collection: Annotated[str | None, Field(description="Search only this collection, by name from list_document_collections; leave out to search all")] = None,
+    folder: Annotated[str | None, Field(description="Only look in this folder and its subfolders: a full path from another tool, or a path relative to a collection's top folder")] = None,
 ) -> dict:
-    results, more = ctx.search_page(query, limit, offset, collection)
+    results, more = ctx.search_page(query, limit, offset, collection, folder)
     out = {"results": results, "count": len(results)}
     if more:
         out["next_offset"] = offset + len(results)

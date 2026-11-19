@@ -11,8 +11,8 @@ The handler's parameters after `ctx` (with type hints, optionally
 Annotated[..., Field(description=...)]) become the tool's input schema.
 `ctx` is a ToolContext: the only way a tool reaches documents, and every
 method on it is already limited to the active collections. Some methods take
-a collection name, but only to narrow the scope to one active collection, so
-a tool cannot widen it. Nothing on `ctx` can
+a collection name and a folder, but only to narrow the scope to one active
+collection or one folder inside them, so a tool cannot widen it. Nothing on `ctx` can
 change a file, so every tool is marked read-only for Claude.
 
 Built-in tools live in the collection_search.tools package. User add-ons are
@@ -31,6 +31,8 @@ import typing
 from dataclasses import asdict, dataclass
 from types import ModuleType
 from typing import Any, Callable
+
+from .collections import narrow_to_folder
 
 log = logging.getLogger(__name__)
 
@@ -51,15 +53,16 @@ class ToolContext:
         self._engine = engine
 
     def search(self, query: str, limit: int | None = None, offset: int = 0,
-               collection: str | None = None) -> list[dict]:
-        return self.search_page(query, limit, offset, collection)[0]
+               collection: str | None = None, folder: str | None = None) -> list[dict]:
+        return self.search_page(query, limit, offset, collection, folder)[0]
 
     def search_page(self, query: str, limit: int | None = None, offset: int = 0,
-                    collection: str | None = None) -> tuple[list[dict], bool]:
-        """One page of results and whether more follow. `collection` limits it to one active collection."""
+                    collection: str | None = None, folder: str | None = None) -> tuple[list[dict], bool]:
+        """One page of results and whether more follow. `collection` limits it to one active
+        collection and `folder` to one folder and everything inside it."""
         if limit is None:
             limit = self._engine.settings.preferences.default_result_count
-        results, more = self._engine.search_page(query, limit, offset, self._only(collection))
+        results, more = self._engine.search_page(query, limit, offset, self._narrow(collection, folder))
         return [_result(r) for r in results], more
 
     def read_file(self, path: str, around: str | None = None, context: int = 4) -> dict:
@@ -69,18 +72,19 @@ class ToolContext:
             out["shown"] = f.shown
         return out
 
-    def document_links(self, path: str, limit: int = 30, collection: str | None = None) -> dict:
-        return self._engine.document_links(path, limit, self._only(collection))
+    def document_links(self, path: str, limit: int = 30, collection: str | None = None,
+                       folder: str | None = None) -> dict:
+        return self._engine.document_links(path, limit, self._narrow(collection, folder))
 
     def explore(self, query: str | None = None, path: str | None = None, steps: int = 2,
-                max_documents: int = 15, collection: str | None = None) -> dict:
-        return self._engine.explore(query, path, steps, max_documents, self._only(collection))
+                max_documents: int = 15, collection: str | None = None, folder: str | None = None) -> dict:
+        return self._engine.explore(query, path, steps, max_documents, self._narrow(collection, folder))
 
     def find_similar(self, path: str, limit: int | None = None, passages: int = 2,
-                     collection: str | None = None) -> dict:
+                     collection: str | None = None, folder: str | None = None) -> dict:
         if limit is None:
             limit = self._engine.settings.preferences.default_result_count
-        r = self._engine.find_similar(path, limit, passages, self._only(collection))
+        r = self._engine.find_similar(path, limit, passages, self._narrow(collection, folder))
         return {
             "source": r.source,
             "source_collections": list(r.source_collections),
@@ -90,6 +94,30 @@ class ToolContext:
 
     def active_collections(self) -> list[str]:
         return self._engine.active_collection_names()
+
+    def collection_folders(self) -> list[dict]:
+        """Each active collection's name and top folders."""
+        return [{"name": c.name, "folders": list(c.folders)} for c in self._engine.settings.active_collections()]
+
+    def folders(self, collection: str | None = None, folder: str | None = None, depth: int = 2) -> dict:
+        """The folders that hold visible documents, `depth` levels below the top folders
+        (or below `folder`), each with its document and subfolder counts."""
+        return self._engine.folder_tree(self._narrow(collection, folder), depth)
+
+    def _narrow(self, collection: str | None, folder: str | None):
+        """The scope for one call: all active collections (None), one of them, and/or one folder
+        inside them. Like `_only`, this can only narrow what is already visible."""
+        chosen = self._only(collection)
+        if not (folder or "").strip():
+            return chosen
+        base = chosen if chosen is not None else self._engine.settings.active_collections()
+        narrowed = narrow_to_folder(base, folder)
+        if not narrowed:
+            where = f'the collection "{chosen[0].name}"' if chosen else "the switched-on collections"
+            raise ValueError(f'No folder "{folder.strip()}" in {where}. Give a full '
+                             "folder path or one relative to a collection's top folder; list_document_folders "
+                             "shows them.")
+        return narrowed
 
     def _only(self, collection: str | None):
         """The switched-on collection named `collection`, as a one-item scope; None for all of them.
