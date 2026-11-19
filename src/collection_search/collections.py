@@ -11,7 +11,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 
 from .parsers import SUPPORTED_EXTENSIONS
@@ -33,6 +33,8 @@ class Collection:
     # The switch nearest above a file wins; with none, a file is on.
     switches: dict[str, bool] = field(default_factory=dict)
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    # Set only on a narrowed copy for one call (never saved): file names must also match this.
+    name_filter: str = ""
 
     def __post_init__(self) -> None:
         self._folder_keys = [path_key(f) for f in self.folders]
@@ -64,6 +66,8 @@ class Collection:
         if self.modified_before and modified > self.modified_before:
             return False
         name = os.path.basename(key)
+        if self.name_filter and not name_matches(name, self.name_filter):
+            return False
         if self.include_patterns and not any(fnmatch.fnmatch(name, p.lower()) for p in self.include_patterns):
             return False
         return not any(fnmatch.fnmatch(name, p.lower()) for p in self.exclude_patterns)
@@ -99,6 +103,57 @@ class Collection:
         if above != on:
             kept[path] = on
         return kept
+
+
+def narrow_to_folder(collections: list[Collection], folder: str) -> list[Collection]:
+    """The collections cut down to one folder and everything inside it.
+
+    `folder` is a full path, or a path relative to a collection's top folders
+    (it is tried under each). Each collection keeps its exclusions, filters and
+    switches, so a folder can only narrow what is already visible. A folder
+    outside every collection, excluded or switched off, or missing, matches
+    nothing, and a relative path can't climb out of a top folder.
+    """
+    folder = folder.strip().strip('"').strip()
+    out = []
+    for c in collections:
+        roots: dict[str, str] = {}
+        for root in c.folders:
+            rk = path_key(root)
+            candidate = folder if os.path.isabs(folder) else os.path.join(root, folder)
+            key = path_key(candidate)
+            if _is_under(key, rk) and os.path.isdir(candidate):
+                if any(_is_under(key, ex) for ex in c._excluded_keys) or c.switch_state(key) == "off":
+                    continue
+                roots.setdefault(key, os.path.normpath(candidate))
+            elif os.path.isabs(folder) and _is_under(rk, key):  # a folder above the top folder takes all of it
+                roots.setdefault(rk, root)
+        if roots:
+            out.append(replace(c, folders=list(roots.values())))
+    return out
+
+
+def name_matches(name: str, pattern: str) -> bool:
+    """Does a file name match a pattern, ignoring case?
+
+    The pattern may use * and ? wildcards; without them it matches any name
+    containing it. Several patterns can be given separated by commas or "|".
+    """
+    name = name.casefold()
+    for part in pattern.replace("|", ",").split(","):
+        part = part.strip().casefold()
+        if not part:
+            continue
+        if not any(ch in part for ch in "*?["):
+            part = f"*{part}*"
+        if fnmatch.fnmatchcase(name, part):
+            return True
+    return False
+
+
+def narrow_to_names(collections: list[Collection], pattern: str) -> list[Collection]:
+    """The collections limited to files whose names match `pattern` (see name_matches)."""
+    return [replace(c, name_filter=pattern.strip()) for c in collections]
 
 
 def _nearest(key: str, switches: dict[str, bool], default: bool) -> bool:

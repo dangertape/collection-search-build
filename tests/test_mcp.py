@@ -76,13 +76,16 @@ def test_collection_parameter_only_on_scoped_tools(app):
     async def go():
         return await server.list_tools()
     tools = {t.name: t for t in anyio.run(go)}
-    assert set(tools) == {"search_documents", "read_document", "list_document_collections",
+    assert set(tools) == {"search_documents", "read_document", "list_document_collections", "list_document_folders",
                           "find_similar_documents", "get_document_links", "explore_documents"}
-    narrowing = {"search_documents", "find_similar_documents", "get_document_links", "explore_documents"}
+    narrowing = {"search_documents", "find_similar_documents", "get_document_links", "explore_documents",
+                 "list_document_folders"}
     for t in tools.values():
         schema = t.input_schema if hasattr(t, "input_schema") else t.inputSchema
         props = schema.get("properties", {})
         assert ("collection" in props) == (t.name in narrowing)
+        assert ("folder" in props) == (t.name in narrowing)
+        assert ("file_name" in props) == (t.name in narrowing - {"list_document_folders"})
         assert not any("collection" in p for p in props if p != "collection")
 
 
@@ -134,7 +137,124 @@ def test_search_returns_only_active(app):
 
 def test_list_collections(app):
     server, *_ = app
-    assert json.loads(text_of(call(server, "list_document_collections", {}))) == {"active_collections": ["On"]}
+    server, settings, engine, docs, off = app
+    assert json.loads(text_of(call(server, "list_document_collections", {}))) == {
+        "collections": [{"name": "On", "folders": [str(docs / "on")]}]}
+
+
+@pytest.fixture
+def tree(app):
+    """A second switched-on collection with nested folders, one of them switched off."""
+    server, settings, engine, docs, off = app
+    root = docs / "library"
+    write(str(root / "Part A" / "one.txt"), "The harbor lighthouse keeps its lamp lit.")
+    write(str(root / "Part A" / "Sub" / "two.txt"), "A lighthouse keeper writes in the log every night.")
+    write(str(root / "Part B" / "three.txt"), "The lighthouse on the far cape was rebuilt in stone.")
+    write(str(root / "Hidden" / "four.txt"), "Secret lighthouse plans.")
+    lib = Collection("Library", [str(root)], switches={str(root / "Hidden"): False})
+    settings.upsert_collection(lib)
+    engine.request_sync()
+    end = time.time() + 10
+    while time.time() < end:
+        data = json.loads(text_of(call(server, "search_documents", {"query": "lighthouse", "limit": 10})))
+        if len({r["path"] for r in data["results"]}) >= 3:
+            break
+        time.sleep(0.1)
+    return server, root
+
+
+def basenames(results, key="path"):
+    return {os.path.basename(r[key]) for r in results}
+
+
+def test_search_one_folder(tree):
+    server, root = tree
+    data = json.loads(text_of(call(server, "search_documents", {"query": "lighthouse", "limit": 10})))
+    assert {"one.txt", "two.txt", "three.txt"} <= basenames(data["results"])
+    for folder in [str(root / "Part A"), "Part A", " Part A/ "]:
+        data = json.loads(text_of(call(server, "search_documents",
+                                       {"query": "lighthouse", "limit": 10, "folder": folder})))
+        assert basenames(data["results"]) == {"one.txt", "two.txt"}, folder
+        assert all(r["collections"] == ["Library"] for r in data["results"])
+    data = json.loads(text_of(call(server, "search_documents",
+                                   {"query": "lighthouse", "collection": "library", "folder": "Part A/Sub"})))
+    assert basenames(data["results"]) == {"two.txt"}
+
+
+def test_folder_cannot_widen_the_scope(tree, app):
+    server, root = tree
+    docs = root.parent
+    for folder in ["Hidden", str(root / "Hidden"), "../off", str(docs / "off"), "Nope", "Part A/../../off"]:
+        result = call(server, "search_documents", {"query": "lighthouse zebracorn", "folder": folder})
+        assert is_error(result) and "No folder" in text_of(result), folder
+    # A folder in another collection doesn't match when a collection is named.
+    result = call(server, "search_documents", {"query": "lighthouse", "collection": "On", "folder": "Part A"})
+    assert is_error(result) and 'in the collection "On"' in text_of(result)
+    # A folder above a top folder covers the collections inside it, switches still apply.
+    data = json.loads(text_of(call(server, "search_documents",
+                                   {"query": "lighthouse zebracorn", "limit": 20, "folder": str(docs)})))
+    found = basenames(data["results"])
+    assert "four.txt" not in found and "secret.txt" not in found and "one.txt" in found
+
+
+def test_search_by_file_name(tree):
+    server, root = tree
+
+    def found(**args):
+        data = json.loads(text_of(call(server, "search_documents", {"query": "lighthouse", "limit": 20, **args})))
+        return basenames(data["results"])
+    assert found(file_name="TWO") == {"two.txt"}
+    assert found(file_name="t*.txt") == {"two.txt", "three.txt"}
+    assert found(file_name="one, three") == {"one.txt", "three.txt"}
+    assert found(file_name="o*", folder="Part A") == {"one.txt"}
+    assert found(file_name="four") == set()  # switched off stays hidden
+    assert found(file_name="nothing-like-this") == set()
+    source = str(root / "Part A" / "one.txt")
+    data = json.loads(text_of(call(server, "find_similar_documents", {"path": source, "file_name": "three"})))
+    assert basenames(data["results"]) == {"three.txt"}
+
+
+def test_name_matches():
+    from collection_search.collections import name_matches
+    assert name_matches("Meeting Summary.md", "summary")
+    assert name_matches("a-notes.MD", "*-notes.md")
+    assert not name_matches("notes.txt", "*.md")
+    assert name_matches("b.txt", "a | b")
+    assert not name_matches("x.txt", " , ")
+
+
+def test_folder_on_similar_links_and_explore(tree):
+    server, root = tree
+    source = str(root / "Part B" / "three.txt")
+    data = json.loads(text_of(call(server, "find_similar_documents", {"path": source, "folder": "Part A"})))
+    assert basenames(data["results"]) <= {"one.txt", "two.txt"} and data["results"]
+    data = json.loads(text_of(call(server, "explore_documents", {"path": source, "folder": "Part A"})))
+    assert basenames(data["documents"]) <= {"one.txt", "two.txt", "three.txt"}
+    data = json.loads(text_of(call(server, "explore_documents", {"query": "lighthouse", "folder": "Part B"})))
+    assert basenames(data["documents"]) == {"three.txt"}
+    data = json.loads(text_of(call(server, "get_document_links", {"path": source, "folder": "Part A"})))
+    assert data["path"] == source
+    # The starting file must still be switched on.
+    result = call(server, "find_similar_documents", {"path": str(root / "Hidden" / "four.txt"), "folder": "Part A"})
+    assert is_error(result) and "not in an active collection" in text_of(result)
+
+
+def test_list_folders(tree):
+    server, root = tree
+    data = json.loads(text_of(call(server, "list_document_folders", {"collection": "Library"})))
+    assert data["truncated"] is False
+    [lib] = data["collections"]
+    assert lib["name"] == "Library"
+    listed = {f["path"]: (f["documents"], f["subfolders"]) for f in lib["folders"]}
+    assert listed == {str(root): (3, 2), str(root / "Part A"): (2, 1),
+                      str(root / "Part A" / "Sub"): (1, 0), str(root / "Part B"): (1, 0)}
+    data = json.loads(text_of(call(server, "list_document_folders", {"collection": "Library", "depth": 0})))
+    assert [f["path"] for f in data["collections"][0]["folders"]] == [str(root)]
+    data = json.loads(text_of(call(server, "list_document_folders", {"folder": "Part A", "depth": 1})))
+    assert [c["name"] for c in data["collections"]] == ["Library"]
+    assert [f["path"] for f in data["collections"][0]["folders"]] == [str(root / "Part A"), str(root / "Part A" / "Sub")]
+    data = json.loads(text_of(call(server, "list_document_folders", {})))
+    assert {c["name"] for c in data["collections"]} == {"On", "Library"}
 
 
 def test_disabled_tool_errors_on_next_call(app):
@@ -201,7 +321,8 @@ def test_shim_end_to_end(app, tmp_path):
 
         names, found, blocked = anyio.run(go)
         assert names == ["explore_documents", "find_similar_documents", "get_document_links",
-                         "list_document_collections", "read_document", "search_documents"]
+                         "list_document_collections", "list_document_folders", "read_document",
+                         "search_documents"]
         assert "lease.txt" in found.content[0].text
         assert is_error(blocked) and "turned off" in blocked.content[0].text
     finally:

@@ -163,7 +163,7 @@ def _allowed_record(store: Store, path: str, active: Iterable[Collection]) -> tu
         mtime = os.stat(record.path).st_mtime
     except OSError:
         raise NotAllowed(path) from None
-    names = tuple(c.name for c in active if c.allows(key, record.mtime) and c.allows(key, mtime))
+    names = tuple(dict.fromkeys(c.name for c in active if c.allows(key, record.mtime) and c.allows(key, mtime)))
     if not names:
         raise NotAllowed(path)
     return record, names
@@ -315,13 +315,18 @@ class SimilarResult:
 
 
 def find_similar(
-    store: Store, path: str, active: Iterable[Collection], limit: int = 8, passages: int = 2
+    store: Store, path: str, active: Iterable[Collection], limit: int = 8, passages: int = 2,
+    source_scope: Iterable[Collection] | None = None,
 ) -> SimilarResult:
-    """Files in the active collections most like the file at `path`, which must be in one too."""
+    """Files in the active collections most like the file at `path`.
+
+    The file itself must be in `source_scope` (default: the same collections),
+    so a narrowed scope can still be compared with a file from elsewhere.
+    """
     import numpy as np
 
     active = [c for c in active if c.active]
-    record, names = _allowed_record(store, path, active)
+    record, names = _allowed_record(store, path, active if source_scope is None else source_scope)
     _, src_locs, _, src = store.chunk_vectors(record.id)
     doc = store.doc_vector(record.id)
     if doc is None or len(src) == 0:
@@ -441,10 +446,14 @@ def _incoming(store, file_id, path, allowed) -> dict[int, list]:
     return found
 
 
-def document_links(store: Store, path: str, active: Iterable[Collection], limit: int = 30) -> dict:
-    """What a file links to and what links back to it."""
+def document_links(store: Store, path: str, active: Iterable[Collection], limit: int = 30,
+                   source_scope: Iterable[Collection] | None = None) -> dict:
+    """What a file links to and what links back to it, among files in `active`.
+
+    The file itself must be in `source_scope` (default: the same collections).
+    """
     active = [c for c in active if c.active]
-    record, names = _allowed_record(store, path, active)
+    record, names = _allowed_record(store, path, active if source_scope is None else source_scope)
     allowed = allowed_files(store, active)
     index, paths = _target_index(store, allowed)
     outgoing, unresolved = _outgoing(store, record.id, index)
@@ -469,6 +478,51 @@ def document_links(store: Store, path: str, active: Iterable[Collection], limit:
     }
 
 
+# ---- folders: what Claude can narrow a search to ----------------------------------
+
+MAX_FOLDERS = 300  # folders listed in one call
+
+
+def folder_tree(store: Store, active: Iterable[Collection], depth: int = 2,
+                limit: int = MAX_FOLDERS) -> dict:
+    """The folders holding visible documents in each collection, down to `depth` levels below
+    its top folders. Each folder has its document count (everything inside it) and how many
+    subfolders with documents it has, so a caller can look deeper where it needs to."""
+    from pathlib import PurePath
+
+    active = [c for c in active if c.active]
+    files = store.files()
+    listed, truncated = [], False
+    for c in active:
+        entries = []
+        for root in c.folders:
+            rk = path_key(root)
+            counts: dict[tuple[str, ...], int] = {}
+            children: dict[tuple[str, ...], set] = {}
+            for key, rec in files.items():
+                if not (key == rk or key.startswith(rk.rstrip(os.sep) + os.sep)) or not c.allows(key, rec.mtime):
+                    continue
+                rel = os.path.relpath(os.path.dirname(key), rk)
+                n = 0 if rel == "." else len(rel.split(os.sep))
+                parts = PurePath(os.path.dirname(rec.path)).parts[-n:] if n else ()
+                for i in range(len(parts) + 1):
+                    counts[parts[:i]] = counts.get(parts[:i], 0) + 1
+                    if i < len(parts):
+                        children.setdefault(parts[:i], set()).add(parts[:i + 1])
+            for parts in sorted(counts, key=lambda p: [x.casefold() for x in p]):
+                if len(parts) > depth:
+                    continue
+                if len(entries) >= limit:
+                    truncated = True
+                    break
+                entries.append({"path": os.path.join(os.path.normpath(root), *parts),
+                                "documents": counts[parts],
+                                "subfolders": len(children.get(parts, ()))})
+        listed.append({"name": c.name, "folders": entries})
+        limit -= len(entries)
+    return {"collections": listed, "truncated": truncated}
+
+
 # ---- explore: walk outward from a starting point ---------------------------------
 
 EXPLORE_SEEDS = 5  # files a query starts from
@@ -484,9 +538,13 @@ def explore(
     path: str | None = None,
     steps: int = 2,
     max_documents: int = 15,
+    source_scope: Iterable[Collection] | None = None,
 ) -> dict:
     """Start from a search or a file, then follow links, backlinks
-    and similar documents outward, up to `steps` hops and `max_documents` files."""
+    and similar documents outward, up to `steps` hops and `max_documents` files.
+
+    A starting file must be in `source_scope` (default: the same collections);
+    every other document found is in `active`."""
     import numpy as np
 
     active = [c for c in active if c.active]
@@ -494,7 +552,8 @@ def explore(
     query = (query or "").strip()
     qvec = np.asarray(embedder.embed_query(query), dtype=np.float32) if query and embedder else None
     if path:
-        record, _ = _allowed_record(store, path, active)
+        record, names = _allowed_record(store, path, active if source_scope is None else source_scope)
+        allowed.setdefault(record.id, names)
         seeds = [record.id]
     elif query:
         hits, _ = search_page(store, embedder, query, active, EXPLORE_SEEDS, per_file=1)
