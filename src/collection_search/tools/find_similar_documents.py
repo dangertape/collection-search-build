@@ -11,9 +11,10 @@ see which others cover the same ground, even when they don't link to it. Give
 the path of a file from another tool. Only documents in the collections the
 user has switched on are compared. Pass "collection" to compare only with
 documents in that collection, or "folder" to compare only with documents in
-that folder and its subfolders; the file itself can be anywhere switched on,
-so you can ask which documents in one part of the collections resemble it. Each result has an overall
-score, a whole-document similarity, a passage similarity, and its best matching
+that folder and its subfolders, or "file_name" to compare only with files
+whose names match. The file itself can be anywhere switched on, so you can
+ask which documents in one part of the collections resemble it. Each result
+has an overall score, a whole-document similarity, a passage similarity, and its best matching
 passages with the part of the source file each one matches.
 """
 
@@ -25,6 +26,7 @@ def handler(
     passages: Annotated[int, Field(description="Matching passages to show per document", ge=0, le=5)] = 2,
     collection: Annotated[str | None, Field(description="Only compare with documents in this collection, by name from list_document_collections")] = None,
     folder: Annotated[str | None, Field(description="Only look in this folder and its subfolders: a full path from another tool, or a path relative to a collection's top folder")] = None,
+    file_name: Annotated[str | None, Field(description="Only look in files whose names match: part of a name, or a pattern with * and ? wildcards; separate several with commas")] = None,
 ) -> dict:
-    result = ctx.find_similar(path, limit, passages, collection, folder)
+    result = ctx.find_similar(path, limit, passages, collection, folder, file_name)
     return result | {"count": len(result["results"])}

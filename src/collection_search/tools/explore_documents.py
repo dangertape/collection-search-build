@@ -9,7 +9,8 @@ Map how the user's documents connect around a topic or a file, in one call.
 Starts from the best matches for a query (or from one file), then follows
 links, backlinks and similar documents outward for a step or two. Pass
 "collection" to stay inside one collection, or "folder" to stay inside one
-folder and its subfolders (a starting file may be anywhere switched on).
+folder and its subfolders, or "file_name" to keep to files whose names match
+(a starting file may be anywhere switched on).
 Returns each document found, how it was reached, and its
 passage most relevant to the query, plus the connections between them. Use it for
 research and cross-referencing questions ("what do my notes say about X
@@ -25,7 +26,8 @@ def handler(
     max_documents: Annotated[int, Field(description="Stop after this many documents", ge=2, le=40)] = 15,
     collection: Annotated[str | None, Field(description="Only find documents in this collection, by name from list_document_collections")] = None,
     folder: Annotated[str | None, Field(description="Only look in this folder and its subfolders: a full path from another tool, or a path relative to a collection's top folder")] = None,
+    file_name: Annotated[str | None, Field(description="Only look in files whose names match: part of a name, or a pattern with * and ? wildcards; separate several with commas")] = None,
 ) -> dict:
     if not (query and query.strip()) and not path:
         raise ValueError("Give a query or a path to start from.")
-    return ctx.explore(query, path, steps, max_documents, collection, folder)
+    return ctx.explore(query, path, steps, max_documents, collection, folder, file_name)

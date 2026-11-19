@@ -6,8 +6,9 @@ their computer) that are currently switched on, with each one's top folders.
 The other document tools only see files in these collections. To look in just
 one of them, pass its name as "collection" to search_documents,
 explore_documents, find_similar_documents or get_document_links; to look in
-one folder and its subfolders, pass "folder". list_document_folders shows the
-folders inside each collection.
+one folder and its subfolders, pass "folder"; to look only in files whose
+names match, pass "file_name". list_document_folders shows the folders inside
+each collection.
 """
 
 

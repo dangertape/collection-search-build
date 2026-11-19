@@ -85,6 +85,7 @@ def test_collection_parameter_only_on_scoped_tools(app):
         props = schema.get("properties", {})
         assert ("collection" in props) == (t.name in narrowing)
         assert ("folder" in props) == (t.name in narrowing)
+        assert ("file_name" in props) == (t.name in narrowing - {"list_document_folders"})
         assert not any("collection" in p for p in props if p != "collection")
 
 
@@ -194,6 +195,32 @@ def test_folder_cannot_widen_the_scope(tree, app):
                                    {"query": "lighthouse zebracorn", "limit": 20, "folder": str(docs)})))
     found = basenames(data["results"])
     assert "four.txt" not in found and "secret.txt" not in found and "one.txt" in found
+
+
+def test_search_by_file_name(tree):
+    server, root = tree
+
+    def found(**args):
+        data = json.loads(text_of(call(server, "search_documents", {"query": "lighthouse", "limit": 20, **args})))
+        return basenames(data["results"])
+    assert found(file_name="TWO") == {"two.txt"}
+    assert found(file_name="t*.txt") == {"two.txt", "three.txt"}
+    assert found(file_name="one, three") == {"one.txt", "three.txt"}
+    assert found(file_name="o*", folder="Part A") == {"one.txt"}
+    assert found(file_name="four") == set()  # switched off stays hidden
+    assert found(file_name="nothing-like-this") == set()
+    source = str(root / "Part A" / "one.txt")
+    data = json.loads(text_of(call(server, "find_similar_documents", {"path": source, "file_name": "three"})))
+    assert basenames(data["results"]) == {"three.txt"}
+
+
+def test_name_matches():
+    from collection_search.collections import name_matches
+    assert name_matches("Meeting Summary.md", "summary")
+    assert name_matches("a-notes.MD", "*-notes.md")
+    assert not name_matches("notes.txt", "*.md")
+    assert name_matches("b.txt", "a | b")
+    assert not name_matches("x.txt", " , ")
 
 
 def test_folder_on_similar_links_and_explore(tree):

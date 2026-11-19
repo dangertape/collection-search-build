@@ -21,11 +21,13 @@ for research questions; and ask for the next page with offset when the
 results are still relevant.
 
 To narrow the search, pass "collection" (one switched-on collection, by name
-from list_document_collections) and/or "folder" (one folder and everything
-inside it; list_document_folders shows the folders). Narrow when the user
-names a collection or folder, when several collections are on and the
-question belongs to one of them, or when earlier results show the answer sits
-in one part of a large collection. Searching a narrower scope also brings up
+from list_document_collections), "folder" (one folder and everything inside
+it; list_document_folders shows the folders) and/or "file_name" (only files
+whose names match: part of a name, or a pattern like "*summary*.md"). Narrow
+when the user names a collection, folder or kind of file, when several
+collections are on and the question belongs to one of them, or when earlier
+results show the answer sits in one part of a large collection or in files
+named a certain way. Searching a narrower scope also brings up
 passages that would otherwise be crowded out. When unsure, search everything
 first, then narrow.
 
@@ -41,8 +43,9 @@ def handler(
     offset: Annotated[int, Field(description="Skip this many results, to get the next page", ge=0, le=500)] = 0,
     collection: Annotated[str | None, Field(description="Search only this collection, by name from list_document_collections; leave out to search all")] = None,
     folder: Annotated[str | None, Field(description="Only look in this folder and its subfolders: a full path from another tool, or a path relative to a collection's top folder")] = None,
+    file_name: Annotated[str | None, Field(description="Only look in files whose names match: part of a name, or a pattern with * and ? wildcards; separate several with commas")] = None,
 ) -> dict:
-    results, more = ctx.search_page(query, limit, offset, collection, folder)
+    results, more = ctx.search_page(query, limit, offset, collection, folder, file_name)
     out = {"results": results, "count": len(results)}
     if more:
         out["next_offset"] = offset + len(results)

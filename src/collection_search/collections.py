@@ -33,6 +33,8 @@ class Collection:
     # The switch nearest above a file wins; with none, a file is on.
     switches: dict[str, bool] = field(default_factory=dict)
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    # Set only on a narrowed copy for one call (never saved): file names must also match this.
+    name_filter: str = ""
 
     def __post_init__(self) -> None:
         self._folder_keys = [path_key(f) for f in self.folders]
@@ -64,6 +66,8 @@ class Collection:
         if self.modified_before and modified > self.modified_before:
             return False
         name = os.path.basename(key)
+        if self.name_filter and not name_matches(name, self.name_filter):
+            return False
         if self.include_patterns and not any(fnmatch.fnmatch(name, p.lower()) for p in self.include_patterns):
             return False
         return not any(fnmatch.fnmatch(name, p.lower()) for p in self.exclude_patterns)
@@ -127,6 +131,29 @@ def narrow_to_folder(collections: list[Collection], folder: str) -> list[Collect
         if roots:
             out.append(replace(c, folders=list(roots.values())))
     return out
+
+
+def name_matches(name: str, pattern: str) -> bool:
+    """Does a file name match a pattern, ignoring case?
+
+    The pattern may use * and ? wildcards; without them it matches any name
+    containing it. Several patterns can be given separated by commas or "|".
+    """
+    name = name.casefold()
+    for part in pattern.replace("|", ",").split(","):
+        part = part.strip().casefold()
+        if not part:
+            continue
+        if not any(ch in part for ch in "*?["):
+            part = f"*{part}*"
+        if fnmatch.fnmatchcase(name, part):
+            return True
+    return False
+
+
+def narrow_to_names(collections: list[Collection], pattern: str) -> list[Collection]:
+    """The collections limited to files whose names match `pattern` (see name_matches)."""
+    return [replace(c, name_filter=pattern.strip()) for c in collections]
 
 
 def _nearest(key: str, switches: dict[str, bool], default: bool) -> bool:

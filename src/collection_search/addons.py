@@ -32,7 +32,7 @@ from dataclasses import asdict, dataclass
 from types import ModuleType
 from typing import Any, Callable
 
-from .collections import narrow_to_folder
+from .collections import narrow_to_folder, narrow_to_names
 
 log = logging.getLogger(__name__)
 
@@ -53,16 +53,19 @@ class ToolContext:
         self._engine = engine
 
     def search(self, query: str, limit: int | None = None, offset: int = 0,
-               collection: str | None = None, folder: str | None = None) -> list[dict]:
-        return self.search_page(query, limit, offset, collection, folder)[0]
+               collection: str | None = None, folder: str | None = None,
+               file_name: str | None = None) -> list[dict]:
+        return self.search_page(query, limit, offset, collection, folder, file_name)[0]
 
     def search_page(self, query: str, limit: int | None = None, offset: int = 0,
-                    collection: str | None = None, folder: str | None = None) -> tuple[list[dict], bool]:
+                    collection: str | None = None, folder: str | None = None,
+                    file_name: str | None = None) -> tuple[list[dict], bool]:
         """One page of results and whether more follow. `collection` limits it to one active
-        collection and `folder` to one folder and everything inside it."""
+        collection, `folder` to one folder and everything inside it, and `file_name` to files
+        whose names match a pattern."""
         if limit is None:
             limit = self._engine.settings.preferences.default_result_count
-        results, more = self._engine.search_page(query, limit, offset, self._narrow(collection, folder))
+        results, more = self._engine.search_page(query, limit, offset, self._narrow(collection, folder, file_name))
         return [_result(r) for r in results], more
 
     def read_file(self, path: str, around: str | None = None, context: int = 4) -> dict:
@@ -73,18 +76,21 @@ class ToolContext:
         return out
 
     def document_links(self, path: str, limit: int = 30, collection: str | None = None,
-                       folder: str | None = None) -> dict:
-        return self._engine.document_links(path, limit, self._narrow(collection, folder))
+                       folder: str | None = None, file_name: str | None = None) -> dict:
+        return self._engine.document_links(path, limit, self._narrow(collection, folder, file_name))
 
     def explore(self, query: str | None = None, path: str | None = None, steps: int = 2,
-                max_documents: int = 15, collection: str | None = None, folder: str | None = None) -> dict:
-        return self._engine.explore(query, path, steps, max_documents, self._narrow(collection, folder))
+                max_documents: int = 15, collection: str | None = None, folder: str | None = None,
+                file_name: str | None = None) -> dict:
+        return self._engine.explore(query, path, steps, max_documents,
+                                    self._narrow(collection, folder, file_name))
 
     def find_similar(self, path: str, limit: int | None = None, passages: int = 2,
-                     collection: str | None = None, folder: str | None = None) -> dict:
+                     collection: str | None = None, folder: str | None = None,
+                     file_name: str | None = None) -> dict:
         if limit is None:
             limit = self._engine.settings.preferences.default_result_count
-        r = self._engine.find_similar(path, limit, passages, self._narrow(collection, folder))
+        r = self._engine.find_similar(path, limit, passages, self._narrow(collection, folder, file_name))
         return {
             "source": r.source,
             "source_collections": list(r.source_collections),
@@ -104,9 +110,17 @@ class ToolContext:
         (or below `folder`), each with its document and subfolder counts."""
         return self._engine.folder_tree(self._narrow(collection, folder), depth)
 
-    def _narrow(self, collection: str | None, folder: str | None):
-        """The scope for one call: all active collections (None), one of them, and/or one folder
-        inside them. Like `_only`, this can only narrow what is already visible."""
+    def _narrow(self, collection: str | None, folder: str | None, file_name: str | None = None):
+        """The scope for one call: all active collections (None), one of them, one folder inside
+        them and/or files whose names match a pattern. Like `_only`, this can only narrow what is
+        already visible."""
+        scope = self._narrow_folder(collection, folder)
+        if not (file_name or "").strip():
+            return scope
+        base = scope if scope is not None else self._engine.settings.active_collections()
+        return narrow_to_names(base, file_name)
+
+    def _narrow_folder(self, collection: str | None, folder: str | None):
         chosen = self._only(collection)
         if not (folder or "").strip():
             return chosen
